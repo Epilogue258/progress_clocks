@@ -1,8 +1,32 @@
-/* 最小样式占位：深色基调（跑团环境灯光暗）。设计确认后细化。 */
+/* ============================================================
+   进度钟 Web — 粗野风格（扁平、圆角、无阴影、高对比）
+   深浅模式：CSS 变量 + [data-theme] 切换
+   ============================================================ */
+
 :root {
+  color-scheme: light;
+  --bg: #f2f0eb;
+  --card: #fbfaf7;
+  --text: #161616;
+  --text-dim: #6b6b66;
+  --track: #e3e1da;
+  --accent: #161616;
+  --accent-text: #f2f0eb;
+  --danger: #e53935;
+  --field-bg: #f2f0eb;
+}
+
+:root[data-theme='dark'] {
   color-scheme: dark;
-  background: #1a1a1a;
-  color: #e8e8e8;
+  --bg: #141414;
+  --card: #1e1e1e;
+  --text: #eaeaea;
+  --text-dim: #8a8a8a;
+  --track: #2d2d2d;
+  --accent: #eaeaea;
+  --accent-text: #141414;
+  --danger: #ff5c52;
+  --field-bg: #262626;
 }
 
 * {
@@ -12,13 +36,450 @@
 html,
 body {
   margin: 0;
-  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  transition: background 0.3s, color 0.3s;
 }
 
 #app {
   min-height: 100vh;
   display: flex;
+  flex-direction: column;
+  padding-bottom: 84px; /* 给手机 FAB 让位 */
+}
+
+/* ---------- 顶栏 ---------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  font-family: system-ui, -apple-system, sans-serif;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--track);
+}
+
+.topbar .title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  margin-right: auto;
+}
+
+.tbtn {
+  appearance: none;
+  border: none;
+  background: var(--card);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+.tbtn:hover {
+  background: var(--track);
+}
+
+.tbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tbtn.primary {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.tbtn.primary:hover {
+  filter: brightness(0.82);
+  background: var(--accent);
+}
+
+.tbtn.danger {
+  color: var(--danger);
+}
+
+/* ---------- 卡片网格 ---------- */
+
+.clocks-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 18px;
+  padding: 20px;
+  align-content: start;
+}
+
+.clock-card {
+  position: relative;
+  background: var(--card);
+  border-radius: 20px;
+  padding: 22px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: background 0.2s;
+}
+
+.clock-card:hover {
+  background: var(--track);
+}
+
+.clock-card.current {
+  outline: 2.5px solid var(--text);
+  outline-offset: -2.5px;
+}
+
+.clock-card svg {
+  width: min(100%, 210px);
+  height: auto;
+  display: block;
+}
+
+.clock-count {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.clock-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-settings {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.card-settings:hover {
+  background: var(--track);
+  color: var(--text);
+}
+
+/* ---------- 紧凑列表 ---------- */
+
+.clock-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  max-width: 760px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.clock-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--card);
+  border-radius: 16px;
+  padding: 8px 14px;
+  min-height: 56px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  transition: background 0.2s;
+}
+
+.clock-row:hover {
+  background: var(--track);
+}
+
+.clock-row.current {
+  outline: 2.5px solid var(--text);
+  outline-offset: -2.5px;
+}
+
+.row-btn {
+  appearance: none;
+  border: none;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 12px;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.row-btn.plus {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.row-count {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  min-width: 52px;
+  text-align: center;
+}
+
+.row-name {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 列表行内的齿轮：静态定位（非悬浮），与 +/- 同尺寸 */
+.clock-row .card-settings {
+  position: static;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--field-bg);
+  font-size: 16px;
+}
+
+/* ---------- 格数快速选择（4/6/8） ---------- */
+
+.max-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-max {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.qmax-btn {
+  appearance: none;
+  border: none;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.qmax-btn:hover {
+  filter: brightness(0.92);
+}
+
+.qmax-btn.selected {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.max-picker input[type='number'] {
+  flex: 1;
+  width: auto;
+}
+
+/* ---------- 手机 FAB（新建） ---------- */
+
+.fab {
+  display: none;
+}
+
+/* ---------- 设置面板 ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal {
+  width: min(400px, 100%);
+  background: var(--card);
+  border-radius: 20px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-title {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.field {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+
+.modal input[type='text'],
+.modal input[type='number'] {
+  appearance: none;
+  width: 100%;
+  border: none;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+
+.fill-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fill-row input[type='range'] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.fill-value {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+.color-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.color-swatch {
+  appearance: none;
+  border: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  cursor: pointer;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.color-swatch.selected {
+  outline-color: var(--text);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* ---------- 响应式：手机 ---------- */
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 10px 12px;
+    gap: 6px;
+    overflow-x: auto;
+  }
+
+  .topbar .title {
+    font-size: 16px;
+  }
+
+  .tbtn {
+    padding: 8px 11px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .clocks-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .clock-card {
+    border-radius: 16px;
+    padding: 14px 10px 12px;
+    gap: 8px;
+  }
+
+  .clock-count {
+    font-size: 15px;
+  }
+
+  .clock-name {
+    font-size: 13px;
+  }
+
+  .clock-list {
+    padding: 12px;
+    gap: 8px;
+  }
+
+  /* FAB：手机右下角新建 */
+  .fab {
+    display: grid;
+    position: fixed;
+    right: 18px;
+    bottom: 22px;
+    z-index: 15;
+    width: 58px;
+    height: 58px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 26px;
+    font-weight: 700;
+    place-items: center;
+    cursor: pointer;
+    box-shadow: none;
+  }
 }
