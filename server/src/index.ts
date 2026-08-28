@@ -9,11 +9,12 @@
  *   GET  /*                 -> 静态托管 Web 构建产物（Web/dist）
  *
  * 配置（环境变量）：
- *   PORT  监听端口（默认 2333）
+ *   PORT   监听端口（默认 2333）
+ *   GM_KEY 写鉴权密钥（设置后 POST /api/state 需带 Authorization: Bearer <GM_KEY>；
+ *          不设置 = 不鉴权，仅限开发/局域网信任环境）
  *
- * 说明：
- * - 单写者模型（GM 端全量覆盖），无冲突处理，无需数据库
- * - 写鉴权未实现（信任环境 / 局域网）；如需公网暴露请自行加反向代理
+ * 多写冲突：POST 请求体带 version（= 客户端当前看到的版本），与服务器不一致时
+ * 返回 409 + 最新状态，客户端拉取合并后重试。不带 version = 强制覆盖。
  */
 
 import { createServer } from 'node:http'
@@ -25,9 +26,26 @@ import { buildExportSvg } from '../../common/export-svg.ts'
 import { loadState, saveState } from './store.ts'
 import { renderPng } from './render.ts'
 
+// 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
+try {
+  process.loadEnvFile()
+} catch {
+  // .env 不存在：静默，依赖系统环境变量
+}
+
 const PORT = Number(process.env.PORT || 2333)
+const GM_KEY = process.env.GM_KEY
 const DIST_DIR = join(fileURLToPath(new URL('..', import.meta.url)), '..', 'Web', 'dist')
 const MAX_BODY = 1 * 1024 * 1024 // 请求体上限 1MB
+
+/** 写鉴权：请求需带 Authorization: Bearer <GM_KEY>（或 ?key= 查询参数） */
+function checkAuth(req: IncomingMessage): boolean {
+  if (!GM_KEY) return true // 未设置密钥 = 不鉴权
+  const header = req.headers['authorization']
+  if (header === `Bearer ${GM_KEY}`) return true
+  const query = new URL(req.url ?? '/', 'http://localhost').searchParams.get('key')
+  return query === GM_KEY
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -107,8 +125,22 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // 提交状态（全量覆盖）
+    // 密钥验证（GM 登录时确认自己能写）
+    if (req.method === 'GET' && url.pathname === '/api/auth-check') {
+      if (checkAuth(req)) {
+        json(res, 200, { ok: true, gm: true })
+      } else {
+        json(res, 401, { ok: false, error: '未授权：GM 密钥无效' })
+      }
+      return
+    }
+
+    // 提交状态（全量覆盖 + 乐观锁）
     if (req.method === 'POST' && url.pathname === '/api/state') {
+      if (!checkAuth(req)) {
+        json(res, 401, { ok: false, error: '未授权：需要 GM 密钥' })
+        return
+      }
       const body = await readBody(req)
       let parsed: unknown
       try {
@@ -117,8 +149,16 @@ const server = createServer(async (req, res) => {
         json(res, 400, { ok: false, error: 'JSON 解析失败' })
         return
       }
-      saveState(parsed) // store 内部会二次校验 + 容错
-      json(res, 200, { ok: true })
+      // 直接从原始请求体读取 version：省略 = 强制覆盖（兼容旧客户端 / 简化 Bot）
+      const rawVersion = (parsed as Record<string, unknown>)?.version
+      const expected = typeof rawVersion === 'number' ? rawVersion : undefined
+      const result = saveState(parsed, expected)
+      if (result.ok) {
+        json(res, 200, { ok: true, version: result.state.version })
+      } else {
+        // 冲突：返回最新状态，客户端拉取合并
+        json(res, 409, { ok: false, error: '冲突：状态已在别处更新', state: result.current })
+      }
       return
     }
 
@@ -146,7 +186,13 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`进度钟 server 已启动: http://localhost:${PORT}`)
-  console.log(`  状态 API:   GET/POST /api/state`)
+  console.log(`  状态 API:   GET/POST /api/state（POST 需鉴权）`)
+  console.log(`  鉴权验证:   GET /api/auth-check`)
   console.log(`  导出图片:   GET /api/export.png  |  /api/export.svg`)
   console.log(`  静态托管:   Web/dist（先执行 Web 目录下 npm run build）`)
+  if (GM_KEY) {
+    console.log(`  写鉴权:     已启用（GM_KEY 已设置；请求带 Authorization: Bearer <GM_KEY>）`)
+  } else {
+    console.log(`  写鉴权:     未启用（未设置 GM_KEY；公网暴露请务必设置）`)
+  }
 })

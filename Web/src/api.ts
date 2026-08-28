@@ -3,38 +3,74 @@ import type { ClockState } from '../../common/types'
 /**
  * 服务端 API 客户端（契约见 server/README.md）：
  *
- * GET  /api/state      -> 完整状态 JSON（玩家轮询、GM 拉取）
- * POST /api/state      -> 全量覆盖保存（GM 端调用，请求体为完整状态 JSON）
- * GET  /api/export.png -> 整张导出图 PNG（外部插件 / QQ Bot 调用）
+ * GET  /api/state        -> 完整状态 JSON（公开）
+ * POST /api/state        -> 全量覆盖保存（需 GM 密钥；带 version 走乐观锁）
+ * GET  /api/auth-check   -> 密钥验证（GM 登录）
+ * GET  /api/export.png   -> 整张导出图 PNG（公开）
  *
- * 说明：数据量几 KB、单写者（GM）全量覆盖，无需增量/版本/冲突处理。
- * 本地优先：localStorage 兜底，server 不可达时离线可用。
+ * 鉴权：写操作需 Authorization: Bearer <GM_KEY>（由服务器 GM_KEY 环境变量决定是否启用）
+ * 冲突：POST 时 version 与服务器不一致 -> 409 + 最新状态（ApiError.latest）
  */
 
-const DEFAULT_POLL_INTERVAL_MS = 5000
+/** API 错误：带 HTTP 状态码；409 时附带服务器最新状态 */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    /** 409 冲突时服务器返回的最新状态 */
+    public readonly latest?: ClockState,
+  ) {
+    super(message)
+  }
+}
 
-/** 拉取完整状态 */
+function authHeaders(key?: string): Record<string, string> {
+  return key ? { Authorization: `Bearer ${key}` } : {}
+}
+
+/** 拉取完整状态（公开接口） */
 export async function fetchState(baseUrl: string): Promise<ClockState> {
   const res = await fetch(`${baseUrl}/api/state`)
-  if (!res.ok) throw new Error(`fetchState failed: ${res.status}`)
+  if (!res.ok) throw new ApiError(res.status, `获取状态失败: ${res.status}`)
   return (await res.json()) as ClockState
 }
 
-/** 全量保存（GM 端） */
-export async function saveState(baseUrl: string, state: ClockState): Promise<void> {
+/** 全量保存（GM 端）：带密钥鉴权；state.version = 客户端当前看到的版本（乐观锁）
+ *  返回服务器保存后的新版本号，调用方用于更新本地同步基线 */
+export async function saveState(
+  baseUrl: string,
+  state: ClockState,
+  key?: string,
+): Promise<number> {
   const res = await fetch(`${baseUrl}/api/state`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
     body: JSON.stringify(state),
   })
-  if (!res.ok) throw new Error(`saveState failed: ${res.status}`)
+  if (res.status === 409) {
+    const body = (await res.json()) as { state?: ClockState }
+    throw new ApiError(409, '冲突：状态已在别处更新', body.state)
+  }
+  if (!res.ok) throw new ApiError(res.status, `保存失败: ${res.status}`)
+  const body = (await res.json()) as { version?: number }
+  return body.version ?? 0
+}
+
+/** 验证 GM 密钥是否有效（成功返回 true） */
+export async function verifyKey(baseUrl: string, key: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/auth-check`, { headers: authHeaders(key) })
+    return res.ok
+  } catch {
+    return false
+  }
 }
 
 /** 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事 */
 export function pollState(
   baseUrl: string,
   onUpdate: (state: ClockState) => void,
-  intervalMs: number = DEFAULT_POLL_INTERVAL_MS,
+  intervalMs: number = 5000,
 ): () => void {
   let stopped = false
   const tick = async () => {

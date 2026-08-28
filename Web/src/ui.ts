@@ -10,9 +10,23 @@ export interface UiState {
   settingsClockId: string | null
   /** 新建弹窗开关 */
   creating: boolean
+  /** GM 登录弹窗开关 */
+  gmDialog: boolean
 }
 
 export type Rerender = () => void
+
+/** GM 鉴权上下文（由 main.ts 提供，ui.ts 只负责展示与收集输入） */
+export interface GmContext {
+  /** URL 是否强制只读（?readonly 玩家模式：连登录入口都隐藏） */
+  urlReadonly: boolean
+  /** 当前是否已通过密钥验证 */
+  authed: boolean
+  /** 提交密钥验证（main 侧校验并持久化），返回是否成功 */
+  onSubmitKey: (key: string) => Promise<boolean>
+  /** 清除登录态 */
+  onLogout: () => void
+}
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
 
@@ -46,9 +60,10 @@ export function render(
   ui: UiState,
   readonly: boolean,
   rerender: Rerender,
+  gm: GmContext,
 ): void {
   root.textContent = ''
-  root.append(renderTopbar(store, ui, readonly, rerender))
+  root.append(renderTopbar(store, ui, readonly, rerender, gm))
   root.append(
     ui.view === 'grid'
       ? renderGrid(store, ui, readonly, rerender)
@@ -62,6 +77,9 @@ export function render(
       rerender()
     })
     root.append(fab)
+  }
+  if (!gm.urlReadonly && ui.gmDialog) {
+    root.append(renderGmLoginModal(ui, gm, rerender))
   }
   if (!readonly && ui.creating) {
     root.append(renderNewClockModal(store, ui, rerender))
@@ -108,9 +126,21 @@ function renderTopbar(
   ui: UiState,
   readonly: boolean,
   rerender: Rerender,
+  gm: GmContext,
 ): HTMLElement {
   const bar = el('header', 'topbar')
   bar.append(el('span', 'title', '进度钟'))
+
+  // GM 登录状态（玩家只读模式下隐藏入口）
+  if (!gm.urlReadonly) {
+    const gmBtn = el('button', 'tbtn', gm.authed ? 'GM ✓' : 'GM 登录')
+    gmBtn.title = gm.authed ? '点击管理 GM 登录' : '输入 GM 密钥获得编辑权限'
+    gmBtn.addEventListener('click', () => {
+      ui.gmDialog = true
+      rerender()
+    })
+    bar.append(gmBtn)
+  }
 
   const viewBtn = el('button', 'tbtn', ui.view === 'grid' ? '☷ 网格' : '≡ 列表')
   viewBtn.addEventListener('click', () => {
@@ -462,5 +492,55 @@ function renderSettings(
   actions.append(deleteBtn, doneBtn)
   modal.append(actions)
 
+  return backdrop
+}
+
+// ---------- GM 登录弹窗 ----------
+
+function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
+  const { backdrop, modal, close } = modalShell('GM 登录', () => {
+    ui.gmDialog = false
+    rerender()
+  })
+
+  if (gm.authed) {
+    modal.append(el('p', 'gm-status', '当前已以 GM 身份登录'))
+  }
+
+  const hint = el('div', 'gm-hint', '')
+  const input = document.createElement('input')
+  input.type = 'password'
+  input.placeholder = 'GM 密钥'
+  input.autocomplete = 'off'
+
+  const actions = el('div', 'modal-actions')
+  const submit = el('button', 'tbtn primary', gm.authed ? '更换密钥' : '验证并登录')
+  submit.addEventListener('click', async () => {
+    const key = input.value.trim()
+    if (!key) return
+    hint.textContent = '验证中…'
+    const ok = await gm.onSubmitKey(key)
+    if (ok) {
+      close()
+    } else {
+      hint.textContent = '密钥无效，请重试'
+    }
+  })
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submit.click()
+  })
+
+  if (gm.authed) {
+    const logout = el('button', 'tbtn danger', '清除登录')
+    logout.addEventListener('click', () => {
+      gm.onLogout()
+      close()
+    })
+    actions.append(logout)
+  }
+  actions.append(submit)
+
+  modal.append(hint, input, actions)
+  input.focus()
   return backdrop
 }

@@ -25,17 +25,48 @@ export class Store {
   /** 最近交互的钟：数字键 1/2/3 批量填充的目标 */
   currentClockId: string | null = null
 
+  /**
+   * 与服务器同步的基线版本（乐观锁基准）。
+   * 本地操作（含撤销/重做）不改变它；仅 replaceState 与推送成功后更新——
+   * 否则撤销恢复旧快照会携带过期版本，触发 409 假冲突。
+   */
+  private syncedVersion: number
+
   private undoStack: ClockState[] = []
   private redoStack: ClockState[] = []
   private listeners = new Set<() => void>()
 
   constructor() {
     this.state = load()
+    this.syncedVersion = this.state.version
     // 给旧数据补默认颜色（按创建顺序）
     let i = 0
     for (const clock of Object.values(this.state.clocks)) {
       if (!clock.color) clock.color = PALETTE[i++ % PALETTE.length]
     }
+  }
+
+  /** 推送用的状态快照：version 恒为同步基线（避免撤销等携带旧版本） */
+  get syncState(): ClockState {
+    return { ...this.state, version: this.syncedVersion }
+  }
+
+  /** 推送成功回调：更新同步基线（服务器返回的新版本） */
+  markSynced(version: number): void {
+    this.syncedVersion = version
+    this.state.version = version
+    this.persist()
+  }
+
+  /** 用外部状态整体替换（server 拉取 / 数据导入）；清空撤销历史 */
+  replaceState(next: ClockState): void {
+    this.state = parseState(next)
+    this.syncedVersion = this.state.version
+    this.undoStack = []
+    this.redoStack = []
+    this.currentClockId = null
+    this.persist()
+    this.notify()
   }
 
   subscribe(fn: () => void): () => void {
@@ -57,16 +88,6 @@ export class Store {
     } catch {
       // 存储失败（隐私模式等）静默，仅本次会话可用
     }
-    this.notify()
-  }
-
-  /** 用外部状态整体替换（server 拉取 / 数据导入）；清空撤销历史 */
-  replaceState(next: ClockState): void {
-    this.state = parseState(next)
-    this.undoStack = []
-    this.redoStack = []
-    this.currentClockId = null
-    this.persist()
     this.notify()
   }
 

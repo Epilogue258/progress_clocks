@@ -1,52 +1,91 @@
-# progress_clocks
+# progress_clocks —— 跑团进度钟工具
 
-Blades in the Dark 风格进度钟工具：线下跑团（APK）+ 线上跑团（Web）两端，配套 server 提供 JSON 同步与图片导出 API（外部插件如 QQ Bot 可接入）。
+在线进度钟管理工具：GM 建钟、点钟、发图，玩家零安装打开浏览器即看。支持线下（平板/投影）与线上（网团）两种跑团形态，配套 API 可接入 QQ Bot 等外部插件。
+
+## 游戏背景：什么是进度钟（Progress Clock）
+
+进度钟是 **Blades in the Dark**（《暗夜刀锋》）及其衍生 Forged in the Dark 系统的一套规则机制，用于在跑团中追踪"正在逼近的麻烦"和"长期进行的努力"：
+
+- 一个被分成若干段的圆（常见 **4 / 6 / 8 格**，问题越复杂格数越多）
+- 每当角色掷骰部分成功或失败、产生后果时，GM 按后果程度**填充 1–3 格**
+- 填满即触发对应事件：警报响起、守卫开始追捕、目标逃跑、革命爆发……
+
+**关键规则**：
+
+- **钟是障碍而非方法**——为潜入做的钟应叫"内部巡逻"而非"偷偷绕过警卫"；玩家可以用各种方法克服它
+- **追踪进度而非决定进度**——钟是仪表盘，显示速度，不决定速度；GM 随时可按叙事调整
+- **常用变体**：
+  - **危险钟**：警戒度、追捕者接近、怀疑增长（填满 = 危险降临）
+  - **竞争钟**：两个相反的钟对顶（"逃跑" vs "围堵"，先填满者胜）
+  - **连锁钟**：填满后解锁新钟（"防御" → "脆弱"）
+  - **任务钟**：倒计时，填满 = 任务取消或变化
+  - **拉锯钟**：可填充也可清除（"革命！"、地盘争夺）
+  - **长期项目**：8 格起步，多阶段，玩家改变世界的手段
+  - **派系钟**：世界在玩家身后自行运转
+
+本项目忠实实现这套机制：任意等分、点击填充、类型自由（程序不区分类型——那是叙事，不是状态）。
+
+## 项目背景：为什么做成 Web
+
+**起源**：面团跑团时 GM 用平板/投影管理多个进度钟（玩家围观同一屏幕）；网团时 GM 在电脑上操作、玩家各自设备查看。需要一个"零安装、即开即用、可同步"的进度钟。
+
+**形态决策**：
+
+| 形态 | 用途 | 理由 |
+|------|------|------|
+| **Web 应用**（主） | 线上 GM 主控 + 玩家只读查看 | 玩家零安装，任何设备浏览器打开即用；`?readonly` 一键切玩家视角 |
+| **Apk**（待做） | 线下平板主控 | 离线可用（线下无网），本地优先 |
+| **server + API** | 状态同步 + 图片导出 | JSON 契约统一三端；导出图可发群；外部插件（QQ Bot）可直接读写 |
+
+**网团场景**：跑团进行中，Bot 收到 `/clock 2/4 穿过守卫` → 注册/更新进度钟 → `/clock show` → 发送进度钟全景图到群里。API 只提供原语（读/写状态、导出图片），命令解析在 Bot 侧，灵活演进。
+
+**技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。全项目约 1100 行 TS。
 
 ## 架构
 
 ```
 本地优先：任何端离线可用（线下无网也 OK），localStorage 兜底
 单写者：GM 端是唯一写入者，玩家端只读 -> 零冲突
-同步：GM 变更 -> 防抖 500ms 全量 JSON 推送到 server；玩家 Web 轮询（5s）
+同步：GM 变更 -> 防抖 500ms 全量 JSON 推送到 server（带版本号乐观锁）
+冲突：409 -> 自动拉最新并提示（多 GM 同时操作的兜底）
 外部插件：直接读写 server 的 JSON / 调导出图 API
 ```
 
-## 目录
-
-| 目录 | 内容 | 技术栈 |
-|------|------|--------|
-| `common/` | 共享层：JSON 契约、钟图几何、导出图 SVG 生成（三端共用） | TypeScript，平台无关 |
-| `Web/` | 线上主控（GM）+ 只读查看（玩家），同一应用两种角色 | Vite + TypeScript + SVG，零框架 |
-| `Apk/` | 线下主控（平板），本地优先 | Kotlin + Jetpack Compose（minSdk 34） |
-| `server/` | Node 后端：JSON 持久化 + 导出图 API + Web 静态托管 | Node 24 原生 TS，仅 @resvg/resvg-js 一个依赖 |
-
-## 运行
-
-```bash
-# 1. 构建并启动 server（自动托管 Web/dist）
-cd server && npm install && npm start
-# 打开 http://localhost:2333 （?demo 查看示例钟，?readonly 为玩家只读模式）
-
-# 开发 Web 单独调试
-cd Web && npm run dev
+```
+common/（共享层：契约/几何/导出 SVG）
+  ├── Web/   GM 主控 + 玩家只读（同一应用两种角色）
+  └── server/  JSON 持久化 + 导出图 API + Web 静态托管
 ```
 
-## API
+## 快速开始
+
+```bash
+# 1. 构建 Web 前端（产物 Web/dist 由 server 托管）
+cd Web && npm install && npm run build
+
+# 2. 启动 server（自动读 server/.env 里的 GM_KEY；没有则复制 .env.example）
+cd ../server && npm install && npm start
+# 打开 http://localhost:2333 （?demo 查看示例钟，?readonly 为玩家模式）
+```
+
+GM 登录：顶栏"GM 登录"输入 `server/.env` 中的 `GM_KEY`。
+
+## API 一览（详见 server/README.md）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/state` | 完整状态 JSON |
-| POST | `/api/state` | 全量覆盖保存（GM 端 / 外部插件） |
-| GET | `/api/export.png` | 整张导出图 PNG（QQ Bot 直接下载发群） |
-| GET | `/api/export.svg` | 导出图 SVG |
-
-详见 `server/README.md`。
+| GET | `/api/state` | 完整状态 JSON（公开） |
+| POST | `/api/state` | 全量覆盖保存（需 GM 密钥；带 version 走乐观锁，冲突返 409+最新） |
+| GET | `/api/auth-check` | GM 密钥验证 |
+| GET | `/api/export.png` / `.svg` | 整张导出图（QQ Bot 直接下载发群） |
+| GET | `/*` | Web 静态托管 |
 
 ## 统一 JSON 契约（SchemaVersion 1，定义在 common/types.ts）
 
 ```json
 {
   "schemaVersion": 1,
+  "version": 3,
   "clocks": {
     "1720000000000-a1b2": {
       "id": "1720000000000-a1b2",
@@ -60,21 +99,31 @@ cd Web && npm run dev
 }
 ```
 
+- `version`：乐观锁版本号，每次服务器写入 +1
 - 扩展规则：新增字段可选，旧版本忽略未知键，天然向后兼容
-- 边界：`fill > max` clamp；`linkTo` 指向不存在 id 时忽略（当普通钟渲染）
-- 字段命名统一 camelCase
+- 边界：`fill > max` clamp；`linkTo` 指向不存在 id 时忽略
 
 ## Web 功能
 
-- SVG 画钟（清晰接缝 / 填充动画）、卡片网格 + 紧凑列表双视图、深浅模式（跟随系统+手动）
-- 撤销/重做（快照栈）、快捷键（Ctrl+Z/Y/N、数字键 1-3 批量填充）、手机长按/右键设置
-- 新建弹窗（名字 + 4/6/8 格数快速选择）、导出 PNG（离线兜底走浏览器，在线可改用 server API）
+- SVG 画钟：披萨饼式清晰接缝、填充动画、网格/列表双视图
+- 深浅模式（跟随系统 + 手动切换）、响应式（PC 多列 / 手机 2 列）
+- 撤销/重做（快照栈）、快捷键（Ctrl+Z/Y/N、数字键 1-3 批量填充）、长按/右键设置
+- GM 密钥登录（Bearer）、只读模式（?readonly）、导出 PNG、localStorage 离线兜底
 
-## 状态
+## 待办任务
 
-- [x] 骨架：目录结构、JSON 契约、API 客户端、Apk 最小工程
-- [x] Web：画钟渲染、网格/列表视图、深浅模式、撤销/设置面板/快捷键、localStorage
-- [x] server：JSON 持久化（原子写）、状态 API、导出图 API（PNG/SVG）、静态托管、CORS
-- [x] 共享层：common/（契约、几何、导出 SVG），三端共用
-- [ ] Apk：本地持久化、画钟交互（待做）
-- [ ] server：写鉴权 / 多场景支持（二期）
+- [ ] **Apk 端**：目录已有最小 Compose 工程，实现画钟、点击+1/长按菜单、撤销重做、本地持久化（契约同 common/types.ts）、GM 登录、同步
+- [ ] **多场景**：契约方案 A（clock 加 `group` 字段 + 顶层 `scenes` 元数据，向后兼容），Web 场景切换 UI，导出按场景
+- [ ] **SSE 推送**：server 加 `GET /api/events`（状态变更推送），Web 玩家端 EventSource 订阅替代轮询，保留轮询 fallback
+- [ ] **QQ Bot 示例**：命令解析脚本（`/clock 2/4 名字`、`/clock show`、`/clock list`），调 API 的参考实现
+- [ ] **云部署**：学生云 + `GM_KEY` + 中文字体（`apt install fonts-noto-cjk`，否则导出图中文变方块）+ 可选反向代理
+- [ ] **写鉴权限流**（可选）：401 失败计数限速，防公网暴力尝试
+
+## 决策记录
+
+- **单写者假设**：GM 写、玩家读；乐观锁（version）兜底多 GM 并发。这是架构红线，扩展时勿破坏
+- **轮询而非 WebSocket**：变更频率低（几分钟一次），5s 轮询足够且零依赖；要推送再上 SSE
+- **全量覆盖而非增量**：数据几 KB，全量 JSON 推送最简单可靠，无 diff/合并复杂度
+- **程序不区分钟的类型**：危险/竞争/连锁等是叙事标签，机制只有"填充/清除"；只有连锁需要 `linkTo`（预留未实现）
+- **Firefox 放弃**：弹窗不显示经排查为浏览器扩展（KISS-Translator 等翻译插件改写 DOM）干扰，非代码问题；以 Edge/Chrome/移动端为准
+- **MD5 被否**：哈希传输可重放、无解密可言；GM 密钥用环境变量明文 + HTTPS/信任网络

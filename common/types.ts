@@ -35,11 +35,17 @@ export interface ProgressClock {
 /** 完整状态：一次跑团场景 = 一份状态 JSON */
 export interface ClockState {
   schemaVersion: number
+  /**
+   * 状态版本号：每次服务器写入 +1，用于乐观锁冲突检测。
+   * 客户端 POST 时把“自己当前看到的版本”放在这里；
+   * 与服务器不一致时返回 409 并附带最新状态（旧数据缺省 0）。
+   */
+  version: number
   clocks: Record<string, ProgressClock>
 }
 
 export function createEmptyState(): ClockState {
-  return { schemaVersion: SCHEMA_VERSION, clocks: {} }
+  return { schemaVersion: SCHEMA_VERSION, version: 0, clocks: {} }
 }
 
 /** 生成全局唯一 id（时间戳 + 随机后缀） */
@@ -58,6 +64,7 @@ export function parseState(raw: unknown): ClockState {
   if (typeof raw !== 'object' || raw === null) return state
   const obj = raw as Record<string, unknown>
   if (typeof obj.schemaVersion === 'number') state.schemaVersion = obj.schemaVersion
+  if (typeof obj.version === 'number') state.version = obj.version
   if (obj.clocks && typeof obj.clocks === 'object') {
     for (const [id, value] of Object.entries(obj.clocks as Record<string, unknown>)) {
       const c = value as Record<string, unknown>

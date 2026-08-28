@@ -13,6 +13,7 @@ captures/
 
 # server 运行时数据
 server/data/
+server/.env
 
 # OS
 .DS_Store

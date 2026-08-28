@@ -19,14 +19,14 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
   --bg: #141414;
-  --card: #1e1e1e;
+  --card: #2a2a2a; /* 提亮：与 bg 拉开对比，按钮/卡片不再隐形 */
   --text: #eaeaea;
   --text-dim: #8a8a8a;
-  --track: #2d2d2d;
+  --track: #3a3a3a;
   --accent: #eaeaea;
   --accent-text: #141414;
   --danger: #ff5c52;
-  --field-bg: #262626;
+  --field-bg: #343434;
 }
 
 * {
@@ -60,6 +60,7 @@ body {
   top: 0;
   z-index: 10;
   display: flex;
+  flex-wrap: wrap; /* 按钮多/窗口窄时换行，避免被截断不可点 */
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
@@ -79,13 +80,19 @@ body {
   border: none;
   background: var(--card);
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
-  padding: 9px 14px;
+  min-height: 44px; /* 触屏友好下限；宽屏下也不显小 */
+  padding: 10px 18px;
   border-radius: 12px;
   cursor: pointer;
   user-select: none;
   touch-action: manipulation;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  flex-shrink: 0; /* 防止被 flex 压缩 */
   transition: background 0.2s, opacity 0.2s;
 }
 
@@ -318,6 +325,23 @@ body {
   width: auto;
 }
 
+/* ---------- 顶部提示（toast） ---------- */
+
+.toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 12px;
+  pointer-events: none;
+}
+
 /* ---------- 手机 FAB（新建） ---------- */
 
 .fab {
@@ -433,8 +457,9 @@ body {
   }
 
   .tbtn {
-    padding: 8px 11px;
+    padding: 8px 12px;
     font-size: 13px;
+    min-height: 44px; /* 移动端触屏标准 */
     white-space: nowrap;
   }
 
