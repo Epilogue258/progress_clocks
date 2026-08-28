@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+
+# Gradle / Android
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.cxx/
+
+# OS
+.DS_Store
+Thumbs.db

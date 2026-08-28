@@ -1,0 +1,24 @@
+/* 最小样式占位：深色基调（跑团环境灯光暗）。设计确认后细化。 */
+:root {
+  color-scheme: dark;
+  background: #1a1a1a;
+  color: #e8e8e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, -apple-system, sans-serif;
+}
