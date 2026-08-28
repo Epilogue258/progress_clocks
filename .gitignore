@@ -11,6 +11,9 @@ local.properties
 captures/
 .cxx/
 
+# server 运行时数据
+server/data/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,5 +1,5 @@
-import type { ClockState, ProgressClock } from './types'
-import { SCHEMA_VERSION, createClockId, createEmptyState, parseState } from './types'
+import type { ClockState, ProgressClock } from '../../common/types'
+import { SCHEMA_VERSION, createClockId, createEmptyState, parseState } from '../../common/types'
 
 const STORAGE_KEY = 'progress-clocks:state'
 const UNDO_LIMIT = 100
@@ -57,6 +57,16 @@ export class Store {
     } catch {
       // 存储失败（隐私模式等）静默，仅本次会话可用
     }
+    this.notify()
+  }
+
+  /** 用外部状态整体替换（server 拉取 / 数据导入）；清空撤销历史 */
+  replaceState(next: ClockState): void {
+    this.state = parseState(next)
+    this.undoStack = []
+    this.redoStack = []
+    this.currentClockId = null
+    this.persist()
     this.notify()
   }
 

@@ -1,4 +1,4 @@
-import type { ProgressClock } from './types'
+import type { ProgressClock } from '../../common/types'
 import { PALETTE, Store } from './state'
 import { svgClock } from './clock-svg'
 import { exportStateAsPng } from './export'

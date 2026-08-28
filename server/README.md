@@ -1,24 +1,66 @@
-# server（Node 单文件后端，骨架阶段）
+# server（Node 后端，零框架）
 
-## API 契约
+状态存储 + 图片导出 API + Web 静态托管，单进程单文件部署。
+
+## 运行
+
+```bash
+# 先构建 Web 前端（产物在 Web/dist，由本服务托管）
+cd ../Web && npm run build
+
+# 启动（Node 24+，原生运行 TypeScript，无需编译）
+cd ../server && npm install && npm start
+# 开发模式（文件变更自动重启）：npm run dev
+```
+
+默认端口 2333（环境变量 `PORT` 可改）。数据文件：`data/state.json`（原子写入，运行时生成，已 gitignore）。
+
+## API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/state` | 返回完整状态 JSON（玩家轮询、GM 拉取） |
-| POST | `/api/state` | 覆盖保存（GM 端调用，请求体为完整状态 JSON） |
+| GET | `/api/state` | 完整状态 JSON（玩家轮询 / GM 拉取 / 外部插件读取） |
+| POST | `/api/state` | 全量覆盖保存（请求体为完整状态 JSON，自动校验容错） |
+| GET | `/api/export.png` | 整张导出图 PNG（QQ Bot 等外部插件调用） |
+| GET | `/api/export.svg` | 导出图 SVG（调试用） |
+| GET | `/*` | 静态托管 `Web/dist` 构建产物 |
 
-- 数据持久化：单个 JSON 文件（如 `data/state.json`），Node 单进程单线程，同步写文件即可，无需数据库
-- 并发：读请求返回内存中的状态；写请求串行处理
-- 鉴权（待定）：写操作可带 token（GM 端持有），或信任环境不做
-- 静态托管：`dist/`（Web 构建产物）由同一服务托管，玩家零安装直接访问
+- CORS 全开（`Access-Control-Allow-Origin: *`），方便独立部署的 Web 端跨域调用
+- 单写者模型（GM 端全量覆盖），无冲突处理；写鉴权未实现，公网暴露请自加反向代理
+- PNG 渲染依赖 `@resvg/resvg-js`（预编译，无需原生编译）
 
-## 部署目标
+## 外部插件示例（如 QQ Bot）
 
-- 开发：本机 `node index.js`，局域网 `http://电脑IP:端口`
-- 生产：国内学生云（IP:端口直连免备案），或后续域名 + HTTPS
+```bash
+# 读取当前状态
+curl http://服务器:2333/api/state
 
-## 待设计确认
+# 提交状态（全量覆盖）
+curl -X POST http://服务器:2333/api/state \
+  -H "Content-Type: application/json" \
+  --data-binary @state.json
 
-- 写鉴权（token？）
-- 多场景支持（`Scenes` 顶层 key，二期）
-- 广播方式（轮询 vs WebSocket，MVP 用轮询）
+# 导出图片（直接下载发群）
+curl -o clock.png http://服务器:2333/api/export.png
+```
+
+```python
+# Python（常见 Bot 框架场景）
+import requests
+
+BASE = 'http://服务器:2333'
+
+state = requests.get(f'{BASE}/api/state').json()           # 读
+img = requests.get(f'{BASE}/api/export.png').content       # 生成图片发群
+
+state['clocks']['new-1'] = {'id': 'new-1', 'name': '警报', 'max': 4, 'fill': 1}
+requests.post(f'{BASE}/api/state', json=state)             # 写
+```
+
+## 部署注意事项
+
+- **中文字体**：Linux 服务器需安装中文字体（如 `fonts-noto-cjk`），否则导出图中文渲染成方块：
+  ```bash
+  apt install fonts-noto-cjk
+  ```
+- **公网暴露**：直接对公网开放时建议加反向代理（Caddy / Nginx）+ 鉴权，或仅暴露在 Tailscale / 局域网

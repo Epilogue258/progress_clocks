@@ -1,14 +1,14 @@
-import type { ClockState } from './types'
+import type { ClockState } from '../../common/types'
 
 /**
- * 服务端 API 契约（后端为 Node 单文件，见 server/README.md）
+ * 服务端 API 客户端（契约见 server/README.md）：
  *
- * GET  /api/state            -> 完整状态 JSON（玩家轮询、GM 拉取）
- * POST /api/state            -> 覆盖保存（GM 端调用，全量推送；请求体为完整状态）
- * POST /api/state?token=xxx  -> 写操作带 token 鉴权（可选，见 server 设计）
+ * GET  /api/state      -> 完整状态 JSON（玩家轮询、GM 拉取）
+ * POST /api/state      -> 全量覆盖保存（GM 端调用，请求体为完整状态 JSON）
+ * GET  /api/export.png -> 整张导出图 PNG（外部插件 / QQ Bot 调用）
  *
- * 说明：数据量几 KB、单写者（GM），全量覆盖即可，无需增量/版本/冲突处理。
- * 本地优先：Web 端可加 localStorage 缓存做离线兜底（设计阶段确认）。
+ * 说明：数据量几 KB、单写者（GM）全量覆盖，无需增量/版本/冲突处理。
+ * 本地优先：localStorage 兜底，server 不可达时离线可用。
  */
 
 const DEFAULT_POLL_INTERVAL_MS = 5000

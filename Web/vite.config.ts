@@ -5,5 +5,9 @@ export default defineConfig({
   base: './',
   server: {
     host: true, // 局域网可访问，便于本地验证
+    fs: {
+      // 允许访问 ../common（共享契约与导出图生成）
+      allow: ['..'],
+    },
   },
 })
