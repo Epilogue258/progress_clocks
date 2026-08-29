@@ -565,7 +565,31 @@ body {
 }
 
 @media (max-width: 640px) {
+  /* 手机：侧边栏改为顶部的横向滚动房间条（不隐藏，玩家手机也能看到房间） */
+  .main-body {
+    flex-direction: column;
+  }
+
   .room-sidebar {
-    display: none;
+    position: static;
+    flex: none;
+    width: 100%;
+    max-height: 130px;
+    padding: 8px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--track);
+  }
+
+  .room-sidebar-list {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .room-sidebar-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    background: var(--field-bg);
   }
 }

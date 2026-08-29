@@ -210,7 +210,8 @@ const gm: GmContext = {
       gmKey = gmPwd
       gmAuthed = true
       localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
-      const version = await saveRoomState(API_BASE, room, gmPwd, store.syncState)
+      // 新房间初始 version=0：push 本地状态必须带 0，否则携带本地旧版本会触发 409 假冲突
+      const version = await saveRoomState(API_BASE, room, gmPwd, { ...store.syncState, version: 0 })
       store.markSynced(version)
       rerender()
       return { ok: true as const }
