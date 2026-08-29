@@ -31,8 +31,14 @@ export interface UiState {
   gmError: string
   /** 房间连接弹窗开关 */
   roomDialog: boolean
-  /** 侧边栏点击预填的房间名 */
+  /** 侧边栏点击预填的房间名（只在弹窗没被填过时生效） */
   roomPrefill: string
+  /**
+   * 房间弹窗里用户正在填的内容（区别于 roomPrefill 的预填值）。
+   * 存进状态是因为连接失败后要整体重渲染来显示错误，
+   * 草稿不落状态的话，一次报错就会把三个框清空。
+   */
+  roomDraft: { name: string; joinPwd: string; gmPwd: string }
   /** 侧边栏展开开关（汉堡菜单） */
   sidebarOpen: boolean
   /** 顶栏「更多」菜单展开（低频操作收在这里，顶栏才不会挤成一排） */
@@ -41,9 +47,29 @@ export interface UiState {
   shortcuts: boolean
   /** 侧边栏的房间搜索词（存这里，重渲染时不丢） */
   sidebarQuery: string
+  /** 房间弹窗的提示文案（连接中 / 密码错误 / 重名等）。同 gmError，异步结果不写 DOM */
+  roomError: string
 }
 
 export type Rerender = () => void
+
+/**
+ * 打开房间弹窗的唯一切入口。
+ * 四个调用点（顶栏 / 侧边栏 / 分离模式进页面 / 私有房间 401）如果各自设 roomDialog，
+ * 就都得记得顺手清掉上一次的错误提示和草稿，漏一个就会看到上一条残留。
+ * 草稿在这里清空而不是在 close() 里：失败重渲染时草稿要留着，只在重新打开时归零。
+ */
+export function openRoomDialog(ui: UiState, prefill = ''): void {
+  ui.roomDialog = true
+  ui.roomPrefill = prefill
+  ui.roomError = ''
+  ui.roomDraft = { name: '', joinPwd: '', gmPwd: '' }
+}
+
+/** 新建一个空草稿 */
+export function emptyRoomDraft(): UiState['roomDraft'] {
+  return { name: '', joinPwd: '', gmPwd: '' }
+}
 
 /** 房间操作结果 */
 export type RoomResult = { ok: true } | { ok: false; error: string }
@@ -260,7 +286,7 @@ function renderTopbar(
     ? `房间：${gm.roomName}（点击切换 / 新建）`
     : '连接服务器房间（加入 / 新建）'
   roomBtn.addEventListener('click', () => {
-    ui.roomDialog = true
+    openRoomDialog(ui)
     rerender()
   })
   bar.append(roomBtn)
@@ -882,10 +908,11 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   const { backdrop, modal, close } = modalShell('连接房间', () => {
     ui.roomDialog = false
     ui.roomPrefill = ''
+    ui.roomError = ''
     rerender()
   })
 
-  const hint = el('div', 'gm-hint', '')
+  const hint = el('div', 'gm-hint', ui.roomError)
 
   // 服务器地址不再在这里填——它只归「连接与登录」管，这里只告知当前连的是哪台，
   // 免得同一个配置有两个入口，改了这边忘了那边
@@ -895,49 +922,72 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
     `服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
   )
 
-  const roomInput = makeInput('text', '房间名', ui.roomPrefill || gm.roomName)
-
-  const pwdInput = makeInput('password', '加入密码（可留空 = 公开房间，发给玩家）', gm.roomJoinPwd)
-
-  const gmInput = makeInput('password', 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）')
+  // 三个框的值都优先取草稿：报错后整体重渲染时，用户填的东西不能被冲掉
+  const draft = ui.roomDraft
+  const roomInput = makeInput('text', '房间名', draft.name || ui.roomPrefill || gm.roomName)
+  const pwdInput = makeInput(
+    'password',
+    '加入密码（可留空 = 公开房间，发给玩家）',
+    draft.joinPwd || gm.roomJoinPwd,
+  )
+  const gmInput = makeInput(
+    'password',
+    'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）',
+    draft.gmPwd,
+  )
+  // 输入只写状态、不触发重渲染，否则每敲一个字都会重建输入框、焦点就没了
+  roomInput.addEventListener('input', () => {
+    ui.roomDraft.name = roomInput.value
+  })
+  pwdInput.addEventListener('input', () => {
+    ui.roomDraft.joinPwd = pwdInput.value
+  })
+  gmInput.addEventListener('input', () => {
+    ui.roomDraft.gmPwd = gmInput.value
+  })
 
   const actions = el('div', 'modal-actions')
   const joinBtn = el('button', 'tbtn primary', '加入房间')
   const createBtn = el('button', 'tbtn', '新建房间')
 
+  // 同 GM 弹窗：提交是异步的，await 之后手上的节点可能已经失效，
+  // 所以结果写回 ui.roomError 再整体重渲染。（连接中… 这段是同步的，直接写节点即可）
+  let busy = false
   const submit = async (create: boolean) => {
+    if (busy) return
     const room = roomInput.value.trim()
     const joinPwd = pwdInput.value.trim()
     const gmPwd = gmInput.value.trim()
     if (!room) {
-      hint.textContent = '请填写房间名'
+      ui.roomError = '请填写房间名'
+      rerender()
       return
     }
     if (create && gmPwd.length < 6) {
-      hint.textContent = 'GM 密码至少 6 位'
+      ui.roomError = 'GM 密码至少 6 位'
+      rerender()
       return
     }
+    busy = true
     hint.textContent = create ? '创建中…' : '连接中…'
     const result = create
       ? await gm.onCreateRoom(room, joinPwd, gmPwd)
       : await gm.onJoinRoom(room, joinPwd, gmPwd)
+    busy = false
     if (result.ok) {
       close()
-    } else {
-      hint.textContent = result.error
+      return
     }
+    ui.roomError = result.error
+    rerender()
   }
   joinBtn.addEventListener('click', () => void submit(false))
   createBtn.addEventListener('click', () => void submit(true))
-  roomInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void submit(false)
-  })
-  pwdInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void submit(false)
-  })
-  gmInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void submit(false)
-  })
+  for (const input of [roomInput, pwdInput, gmInput]) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') void submit(false)
+    })
+  }
   actions.append(createBtn, joinBtn)
 
   // 删除当前房间（仅已登录 GM；不可恢复，需确认）
@@ -950,7 +1000,8 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
       if (result.ok) {
         close()
       } else {
-        hint.textContent = result.error
+        ui.roomError = result.error
+        rerender()
       }
     })
     modal.append(delBtn)
@@ -1028,8 +1079,7 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
         li.append(el('span', 'room-name', room))
         li.title = '点击加入（需输入密码）'
         li.addEventListener('click', () => {
-          ui.roomPrefill = room
-          ui.roomDialog = true
+          openRoomDialog(ui, room)
           rerender()
         })
         allList.append(li)

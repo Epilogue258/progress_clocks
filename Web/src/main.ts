@@ -11,7 +11,7 @@
  */
 import './styles.css'
 import { Store } from './state'
-import { applyTheme, render, type GmContext, type UiState } from './ui'
+import { applyTheme, emptyRoomDraft, openRoomDialog, render, type GmContext, type UiState } from './ui'
 import type { ClockState } from '../../common/types'
 import { createEmptyState } from '../../common/types'
 import {
@@ -83,6 +83,8 @@ const ui: UiState = {
   shortcuts: false,
   sidebarQuery: '',
   gmError: '',
+  roomError: '',
+  roomDraft: emptyRoomDraft(),
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -204,10 +206,14 @@ const gm: GmContext = {
     return API_BASE
   },
   /** 加入房间（GitHub 模型：pull 到本地；gmPwd 可空 = 只读玩家） */
-  onJoinRoom: async (server: string, room: string, joinPwd: string, gmPwd: string) => {
+  onJoinRoom: async (room: string, joinPwd: string, gmPwd: string) => {
+    // 加入会用房间状态整体覆盖本地，与切换房间/服务器一样先确认
+    if (dirty && !confirm('本地有尚未同步到服务器的改动，加入房间将丢弃这些改动。继续？')) {
+      return { ok: false as const, error: '已取消' }
+    }
     try {
-      const remote = await fetchRoomState(normalizeBase(server), room, joinPwd)
-      enterRoom(server, room, joinPwd)
+      const remote = await fetchRoomState(API_BASE, room, joinPwd)
+      enterRoom(room, joinPwd)
       store.replaceState(remote)
       ui.sidebarOpen = false
       // 只有验证通过的 GM 密码才值得缓存；否则下次切换会被无声地当成玩家
@@ -232,10 +238,11 @@ const gm: GmContext = {
     }
   },
   /** 新建房间（GitHub 模型：新开仓库并 push 本地状态） */
-  onCreateRoom: async (server: string, room: string, joinPwd: string, gmPwd: string) => {
+  onCreateRoom: async (room: string, joinPwd: string, gmPwd: string) => {
+    // 不确认 dirty：本地状态会被 push 进新房间，不丢东西
     try {
-      await createRoom(normalizeBase(server), room, joinPwd, gmPwd)
-      enterRoom(server, room, joinPwd)
+      await createRoom(API_BASE, room, joinPwd, gmPwd)
+      enterRoom(room, joinPwd)
       ui.sidebarOpen = false
       gmKey = gmPwd
       gmAuthed = true
@@ -272,7 +279,10 @@ const gm: GmContext = {
     }
     try {
       const remote = await fetchRoomState(entry.server, entry.room, entry.joinPwd)
-      enterRoom(entry.server, entry.room, entry.joinPwd)
+      // 已知房间自带服务器地址：切过去时连地址一起换（这就是「一键切换」的意义）
+      API_BASE = normalizeBase(entry.server)
+      localStorage.setItem(API_BASE_STORAGE, API_BASE)
+      enterRoom(entry.room, entry.joinPwd)
       store.replaceState(remote)
       ui.sidebarOpen = false
       if (entry.gmPwd) {
@@ -340,10 +350,12 @@ const rerender = () =>
 
 // ---------- 房间进入 / 同步上下文 ----------
 
-/** 保存房间配置并进入：更新 server/room/加入密码记忆 + URL 同步（密码不进 URL） */
-function enterRoom(server: string, room: string, joinPwd: string): void {
-  API_BASE = normalizeBase(server)
-  localStorage.setItem(API_BASE_STORAGE, API_BASE)
+/**
+ * 保存房间配置并进入：更新 room/加入密码记忆 + URL 同步（密码不进 URL）。
+ * 刻意不动 API_BASE：服务器地址只由「连接与登录」改，进房间不该顺带换服务器——
+ * 房间是另一台服务器上的另一个仓库，悄悄把地址也换了只会让人困惑
+ */
+function enterRoom(room: string, joinPwd: string): void {
   roomName = room
   roomJoinPwd = joinPwd
   localStorage.setItem(ROOM_STORAGE, room)
@@ -371,7 +383,7 @@ rerender()
 // 进入页判定：仅分离模式（配了 server）且还没进房间时弹窗选择/新建
 // 有 ?room= 时直接进入（公开房间免密；私有房间拉取 401 后由 bootstrapPull 弹窗）
 if (API_BASE !== '' && !roomName) {
-  ui.roomDialog = true
+  openRoomDialog(ui)
   rerender()
 }
 
@@ -440,7 +452,7 @@ async function bootstrapPull(): Promise<void> {
       // 私有房间 / 加入密码记忆失效：弹连接弹窗重新输入
       // 停轮询：密码不对时每 5s 的失败请求无意义，等用户重新输入后再起
       stopPolling()
-      ui.roomDialog = true
+      openRoomDialog(ui)
       rerender()
     } else {
       // 离线 / server 刚重启：5s 后重试；成功前本地数据可用
