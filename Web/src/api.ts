@@ -140,6 +140,18 @@ export async function verifyRoomKey(baseUrl: string, room: string, gmPwd: string
   }
 }
 
+/** 删除房间（需 GM 密码；不可恢复，调用方必须先确认） */
+export async function deleteRoom(baseUrl: string, room: string, gmPwd: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}`, {
+    method: 'DELETE',
+    headers: roomHeaders(gmPwd),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new ApiError(res.status, body?.error ?? `删除房间失败: ${res.status}`)
+  }
+}
+
 /** 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事 */
 export function pollState(
   baseUrl: string,

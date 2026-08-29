@@ -7,7 +7,7 @@
  * - 乐观锁：saveState 接收期望版本，不一致时拒绝并返回最新状态（多写冲突检测）
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ClockState } from '../../common/types.ts'
@@ -87,6 +87,15 @@ export function createRoom(name: string, joinPwd: string, gmPwd: string): Create
   writeFileSync(roomMetaFile(name), JSON.stringify(meta, null, 2), 'utf-8')
   writeFileSync(roomStateFile(name), JSON.stringify(createEmptyState(), null, 2), 'utf-8')
   return { ok: true, room: meta }
+}
+
+/** 删除房间（连同状态与元数据）；不存在或非法名返回 false */
+export function deleteRoom(name: string): boolean {
+  if (!isValidRoomName(name)) return false
+  const dir = join(ROOMS_DIR, name)
+  if (!existsSync(dir)) return false
+  rmSync(dir, { recursive: true, force: true })
+  return true
 }
 
 /** 读取房间元数据（含密码）；不存在或非法名返回 null */

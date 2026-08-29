@@ -23,7 +23,7 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildExportSvg } from '../../common/export-svg.ts'
-import { createRoom, listRooms, loadRoomMeta, loadState, saveState } from './store.ts'
+import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, saveState } from './store.ts'
 import { renderPng } from './render.ts'
 
 // 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
@@ -47,11 +47,11 @@ function checkAuth(req: IncomingMessage): boolean {
   return query === GM_KEY
 }
 
-/** 房间路由解析：/api/room/<name>/<action>，非法路径或非法编码返回 null */
+/** 房间路由解析：/api/room/<name>/<action>（action 可省略 = 删除），非法路径或非法编码返回 null */
 function parseRoomPath(
   pathname: string,
-): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' } | null {
-  const m = /^\/api\/room\/([^/]+)\/(state|export\.png|export\.svg|auth-check)$/.exec(pathname)
+): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'delete' } | null {
+  const m = /^\/api\/room\/([^/]+)(?:\/(state|export\.png|export\.svg|auth-check))?$/.exec(pathname)
   if (!m) return null
   let room: string
   try {
@@ -60,7 +60,7 @@ function parseRoomPath(
     // 非法 UTF-8 编码：直接拒绝（落到静态托管 404，不抛 500）
     return null
   }
-  return { room, action: m[2] as 'state' | 'export.png' | 'export.svg' | 'auth-check' }
+  return { room, action: (m[2] ?? 'delete') as 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'delete' }
 }
 
 /** 解析并保存状态（默认房间或命名房间）：JSON 解析 + 乐观锁 + 冲突响应 */
@@ -160,7 +160,7 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
 const server = createServer(async (req, res) => {
   // CORS：允许独立部署的 Web 端 / 外部插件跨域访问
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
   // 注意：跨域（分离模式 file:// 或异源托管）时带 Authorization 头必须 preflight 放行
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   if (req.method === 'OPTIONS') {
@@ -221,6 +221,16 @@ const server = createServer(async (req, res) => {
         return
       }
       const bearer = req.headers['authorization']
+      // 删除房间：需 GM 密码（不可恢复，调用方必须确认）
+      if (req.method === 'DELETE') {
+        if (bearer !== `Bearer ${meta.gmPwd}`) {
+          json(res, 401, { ok: false, error: '未授权：需要 GM 密码' })
+          return
+        }
+        deleteRoom(room)
+        json(res, 200, { ok: true })
+        return
+      }
       // GM 密码验证（写权限确认，GM 登录用）
       if (action === 'auth-check') {
         if (bearer === `Bearer ${meta.gmPwd}`) {

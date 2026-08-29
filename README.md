@@ -84,6 +84,7 @@ GM 登录：顶栏"GM 登录"输入 `server/.env` 中的 `GM_KEY`。
 | POST | `/api/room/<name>/state` | 房间全量保存（需 GM 密码 + 乐观锁） |
 | GET | `/api/room/<name>/export.png` / `.svg` | 房间导出图（需加入密码；公开房间免密） |
 | GET | `/api/room/<name>/auth-check` | GM 密码验证（写权限确认） |
+| DELETE | `/api/room/<name>` | 删除房间（需 GM 密码；不可恢复） |
 | GET | `/*` | Web 静态托管 |
 
 ## 统一 JSON 契约（SchemaVersion 1，定义在 common/types.ts）
@@ -115,6 +116,8 @@ GM 登录：顶栏"GM 登录"输入 `server/.env` 中的 `GM_KEY`。
 - 深浅模式（跟随系统 + 手动切换）、响应式（PC 多列 / 手机 2 列）
 - 撤销/重做（快照栈）、快捷键（Ctrl+Z/Y/N、数字键 1-3 批量填充）、长按/右键设置
 - GM 密钥登录（Bearer）、只读模式（?readonly）、导出 PNG、localStorage 离线兜底
+- **房间侧边栏**：左侧面板显示服务器所有房间，点击即可填密码加入；
+  GM 登录后可在连接弹窗删除当前房间（确认后不可恢复）
 - **房间**（GitHub 模型）：顶栏「连接」或进入页——加入 = pull 房间状态（只读），
   新建 = 建仓并 push 本地状态；双密码：加入密码（玩家只读，可空 = 公开房间）+ GM 密码
   （写凭证，必填 ≥6 位）；玩家不知 GM 密码则只读，GM 改动后玩家轮询同步；

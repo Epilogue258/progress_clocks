@@ -14,6 +14,8 @@ export interface UiState {
   gmDialog: boolean
   /** 房间连接弹窗开关 */
   roomDialog: boolean
+  /** 侧边栏点击预填的房间名 */
+  roomPrefill: string
 }
 
 export type Rerender = () => void
@@ -43,6 +45,10 @@ export interface GmContext {
   onJoinRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
   /** 新建房间（main 侧建仓 + push 本地状态） */
   onCreateRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
+  /** 拉取房间列表（公开） */
+  onListRooms: () => Promise<string[]>
+  /** 删除房间（需已登录 GM；不可恢复，调用方先确认） */
+  onDeleteRoom: (room: string) => Promise<RoomResult>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -81,7 +87,9 @@ export function render(
 ): void {
   root.textContent = ''
   root.append(renderTopbar(store, ui, readonly, rerender, gm))
-  root.append(
+  const body = el('div', 'main-body')
+  body.append(renderRoomSidebar(ui, gm, rerender))
+  body.append(
     ui.view === 'grid'
       ? renderGrid(store, ui, readonly, rerender)
       : renderList(store, ui, readonly, rerender),
@@ -608,6 +616,7 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
 function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const { backdrop, modal, close } = modalShell('连接房间', () => {
     ui.roomDialog = false
+    ui.roomPrefill = ''
     rerender()
   })
 
@@ -621,8 +630,8 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
 
   const roomInput = document.createElement('input')
   roomInput.type = 'text'
-  roomInput.placeholder = '房间名（字母/数字/下划线/连字符）'
-  roomInput.value = gm.roomName
+  roomInput.placeholder = '房间名'
+  roomInput.value = ui.roomPrefill || gm.roomName
   roomInput.autocomplete = 'off'
 
   const pwdInput = document.createElement('input')
@@ -676,7 +685,57 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   })
   actions.append(createBtn, joinBtn)
 
+  // 删除当前房间（仅已登录 GM；不可恢复，需确认）
+  if (gm.authed && gm.roomName) {
+    const delBtn = el('button', 'tbtn danger', '删除当前房间')
+    delBtn.title = '删除后所有进度钟将丢失，无法恢复'
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除房间「${gm.roomName}」？此操作不可恢复，所有进度钟将丢失。`)) return
+      const result = await gm.onDeleteRoom(gm.roomName)
+      if (result.ok) {
+        close()
+      } else {
+        hint.textContent = result.error
+      }
+    })
+    modal.append(delBtn)
+  }
+
   modal.append(hint, serverInput, roomInput, pwdInput, gmInput, actions)
   roomInput.focus()
   return backdrop
+}
+
+// ---------- 房间侧边栏（显示所有房间，点击加入） ----------
+
+function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
+  const aside = el('aside', 'room-sidebar')
+  const titleRow = el('div', 'room-sidebar-title')
+  titleRow.append(el('span', '', '房间'))
+  const list = el('ul', 'room-sidebar-list')
+
+  const load = async () => {
+    list.textContent = ''
+    const rooms = await gm.onListRooms()
+    if (rooms.length === 0) {
+      list.append(el('li', 'room-sidebar-empty', '暂无房间'))
+      return
+    }
+    for (const room of rooms) {
+      const li = el('li', 'room-sidebar-item', room)
+      li.title = '点击加入（输入密码）'
+      li.addEventListener('click', () => {
+        ui.roomPrefill = room
+        ui.roomDialog = true
+        rerender()
+      })
+      list.append(li)
+    }
+  }
+  const refresh = el('button', 'tbtn', '刷新')
+  refresh.addEventListener('click', () => void load())
+  titleRow.append(refresh)
+  aside.append(titleRow, list)
+  void load()
+  return aside
 }

@@ -13,11 +13,14 @@ import './styles.css'
 import { Store } from './state'
 import { applyTheme, render, type GmContext, type UiState } from './ui'
 import type { ClockState } from '../../common/types'
+import { createEmptyState } from '../../common/types'
 import {
   ApiError,
   createRoom,
+  deleteRoom,
   fetchRoomState,
   fetchState,
+  listRooms,
   pollState,
   saveRoomState,
   saveState,
@@ -69,7 +72,14 @@ if (
   store.createClock('红绸党', 6)
   store.createClock('潜入斯特朗福德', 8)
 }
-const ui: UiState = { view: 'grid', settingsClockId: null, creating: false, gmDialog: false, roomDialog: false }
+const ui: UiState = {
+  view: 'grid',
+  settingsClockId: null,
+  creating: false,
+  gmDialog: false,
+  roomDialog: false,
+  roomPrefill: '',
+}
 
 // ---------- GM 鉴权状态 ----------
 
@@ -203,6 +213,38 @@ const gm: GmContext = {
       const version = await saveRoomState(API_BASE, room, gmPwd, store.syncState)
       store.markSynced(version)
       rerender()
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
+  },
+  /** 拉取房间列表（公开；失败静默返回空） */
+  onListRooms: async () => {
+    try {
+      return await listRooms(API_BASE)
+    } catch {
+      return []
+    }
+  },
+  /** 删除房间（GM 密码已在登录态；删除后退出房间回到默认状态） */
+  onDeleteRoom: async (room: string) => {
+    try {
+      await deleteRoom(API_BASE, room, gmKey ?? '')
+      roomName = ''
+      roomJoinPwd = ''
+      roomJoinSet = false
+      gmKey = null
+      gmAuthed = false
+      localStorage.removeItem(ROOM_STORAGE)
+      localStorage.removeItem(ROOM_JOIN_STORAGE)
+      localStorage.removeItem(ROOM_GM_STORAGE)
+      store.replaceState(createEmptyState())
+      const params = new URLSearchParams(location.search)
+      params.delete('room')
+      const qs = params.toString()
+      history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
+      rerender()
+      showToast(`房间「${room}」已删除`)
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
