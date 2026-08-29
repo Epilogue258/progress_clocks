@@ -72,6 +72,27 @@ state['clocks']['new-1'] = {'id': 'new-1', 'name': '警报', 'max': 4, 'fill': 1
 requests.post(f'{BASE}/api/state', json=state, headers=H)       # 写（需密钥）
 ```
 
+## API 自检（写插件前先跑一遍）
+
+`api-check.py` 会照着契约把接口打一遍，确认「服务器活着 + 返回的形状对」。
+只用标准库，无需 `pip install`。
+
+```bash
+python api-check.py                                  # 本机 2333，只读
+python api-check.py --base http://服务器:2333 --key 你的GM密钥
+python api-check.py --full                           # 含写往返（自建临时房间，测完删除）
+python api-check.py --full --join-pwd 123            # 顺带验证加入密码读锁
+```
+
+- **默认只读**：只发 GET，外加一次带过期 `version` 的 POST —— 版本不匹配会被服务端
+  拒绝（409），不会改动任何状态，可以直接对线上房间跑。
+- **`--full` 才改数据**：写往返、房间生命周期、1MB 体积上限全在脚本自建的临时房间里做，
+  测完删掉。默认房间和已有房间不会被碰；若目标房间名已存在则整个生命周期跳过，
+  **不会删除不是自己建的房间**。
+- 退出码：`0` 无失败项 / `1` 有失败项 / `2` 连不上服务器。
+- 访问 `localhost` 时自动忽略 `http_proxy`（代理认不出 localhost，会返 502，
+  看着像服务器挂了）；远程地址需要绕代理用 `--no-proxy`。
+
 ## 部署注意事项
 
 - **中文字体**：Linux 服务器需安装中文字体（如 `fonts-noto-cjk`），否则导出图中文渲染成方块：

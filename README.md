@@ -103,6 +103,9 @@ cd ../server && npm install && npm start
 
 写接口（POST）的请求体上限 1MB，超限返回 413 并带上明确原因（不断开连接，客户端可据此判断是重试还是数据有问题）。
 
+写外部插件（如 QQ Bot）前先跑 `python server/api-check.py`（详见 server/README.md）：默认只读、
+可直接对线上服务器跑；`--full` 才改数据，且在自建临时房间内做完即删，不碰默认房间和已有房间。
+
 ## 统一 JSON 契约（SchemaVersion 1，定义在 common/types.ts）
 
 ```json

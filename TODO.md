@@ -8,6 +8,7 @@
 - [ ] **QQ Bot 示例脚本**（`TODO-22c3f83c`，bot/example）
   命令解析脚本（`/clock 2/4 名字`、`/clock show`、`/clock list`），调 API 的参考实现。
   当前已有 curl / Python（requests）示例，见 `server/README.md`。
+  动工前先跑 `server/api-check.py`（API 契约自检，只读/--full 两档），确认接口形状没漂。
 
 - [ ] **云部署**（`TODO-6b955a94`，deploy/ops）
   学生云 + `GM_KEY` + 中文字体（`apt install fonts-noto-cjk`，否则导出图中文变方块）
