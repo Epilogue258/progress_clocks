@@ -1,6 +1,7 @@
 # TODO —— progress_clocks
 
-> 由 `.pi/todos` 同步维护（仅本仓库相关项；pi-remote 等其他项目的 todo 不在此列）。
+> 仅本仓库相关项。根目录 `README.md` 的「待办任务」一节是这里的摘要，
+> 增删条目时两边一起改。
 
 ## Open
 
