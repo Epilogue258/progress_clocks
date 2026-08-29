@@ -23,7 +23,7 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildExportSvg } from '../../common/export-svg.ts'
-import { loadState, saveState } from './store.ts'
+import { createRoom, listRooms, loadRoomMeta, loadState, saveState } from './store.ts'
 import { renderPng } from './render.ts'
 
 // 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
@@ -45,6 +45,65 @@ function checkAuth(req: IncomingMessage): boolean {
   if (header === `Bearer ${GM_KEY}`) return true
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams.get('key')
   return query === GM_KEY
+}
+
+/** 房间鉴权：读写都需房间密码（Bearer <密码>） */
+function checkRoomAuth(req: IncomingMessage, room: string): boolean {
+  const meta = loadRoomMeta(room)
+  if (!meta) return false
+  return req.headers['authorization'] === `Bearer ${meta.password}`
+}
+
+/** 房间路由解析：/api/room/<name>/<action>，非法路径或非法编码返回 null */
+function parseRoomPath(
+  pathname: string,
+): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' } | null {
+  const m = /^\/api\/room\/([^/]+)\/(state|export\.png|export\.svg|auth-check)$/.exec(pathname)
+  if (!m) return null
+  let room: string
+  try {
+    room = decodeURIComponent(m[1])
+  } catch {
+    // 非法 UTF-8 编码：直接拒绝（落到静态托管 404，不抛 500）
+    return null
+  }
+  return { room, action: m[2] as 'state' | 'export.png' | 'export.svg' | 'auth-check' }
+}
+
+/** 解析并保存状态（默认房间或命名房间）：JSON 解析 + 乐观锁 + 冲突响应 */
+async function handleSaveState(req: IncomingMessage, res: ServerResponse, room?: string): Promise<void> {
+  const body = await readBody(req)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    json(res, 400, { ok: false, error: 'JSON 解析失败' })
+    return
+  }
+  // 直接从原始请求体读取 version：省略 = 强制覆盖（兼容旧客户端 / 简化 Bot 调用）
+  const rawVersion = (parsed as Record<string, unknown>)?.version
+  const expected = typeof rawVersion === 'number' ? rawVersion : undefined
+  const result = saveState(parsed, expected, room)
+  if (result.ok) {
+    json(res, 200, { ok: true, version: result.state.version })
+  } else {
+    // 冲突：返回最新状态，客户端拉取合并
+    json(res, 409, { ok: false, error: '冲突：状态已在别处更新', state: result.current })
+  }
+}
+
+/** 导出图（默认房间或命名房间，PNG / SVG） */
+function sendExport(res: ServerResponse, room: string | undefined, format: 'png' | 'svg'): void {
+  const state = loadState(room)
+  if (format === 'png') {
+    const png = renderPng(state)
+    res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' })
+    res.end(png)
+  } else {
+    const svg = buildExportSvg(state)
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' })
+    res.end(svg)
+  }
 }
 
 const MIME: Record<string, string> = {
@@ -109,7 +168,8 @@ const server = createServer(async (req, res) => {
   // CORS：允许独立部署的 Web 端 / 外部插件跨域访问
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  // 注意：跨域（分离模式 file:// 或异源托管）时带 Authorization 头必须 preflight 放行
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
     res.end()
@@ -119,7 +179,80 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
 
   try {
-    // 获取状态
+    // ---- 房间（GitHub 模型：一个 server 多房间，密码 = 读写鉴权） ----
+
+    // 房间列表（公开）
+    if (req.method === 'GET' && url.pathname === '/api/rooms') {
+      json(res, 200, { rooms: listRooms() })
+      return
+    }
+
+    // 新建房间（创建者设定密码；密码即该房间的读写凭证）
+    if (req.method === 'POST' && url.pathname === '/api/rooms') {
+      const body = await readBody(req)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(body)
+      } catch {
+        json(res, 400, { ok: false, error: 'JSON 解析失败' })
+        return
+      }
+      const obj = parsed as Record<string, unknown>
+      const name = typeof obj?.name === 'string' ? obj.name.trim() : ''
+      const password = typeof obj?.password === 'string' ? obj.password : ''
+      if (!password) {
+        json(res, 400, { ok: false, error: '房间密码不能为空' })
+        return
+      }
+      const result = createRoom(name, password)
+      if (result.ok) {
+        json(res, 200, { ok: true, room: result.room.name })
+      } else if (result.reason === 'exists') {
+        json(res, 409, { ok: false, error: '房间已存在' })
+      } else {
+        json(res, 400, { ok: false, error: '非法房间名：不能含 / \ 或 Windows 保留字符，1-32 字符' })
+      }
+      return
+    }
+
+    // 房间状态 / 导出图 / 密钥验证（读写都需房间密码）
+    const roomPath = parseRoomPath(url.pathname)
+    if (roomPath) {
+      const { room, action } = roomPath
+      if (!loadRoomMeta(room)) {
+        json(res, 404, { ok: false, error: '房间不存在' })
+        return
+      }
+      if (!checkRoomAuth(req, room)) {
+        json(res, 401, { ok: false, error: '未授权：房间密码错误' })
+        return
+      }
+      if (action === 'state') {
+        if (req.method === 'GET') {
+          json(res, 200, loadState(room))
+          return
+        }
+        if (req.method === 'POST') {
+          await handleSaveState(req, res, room)
+          return
+        }
+        json(res, 405, { ok: false, error: '方法不允许' })
+        return
+      }
+      if (action === 'export.png' || action === 'export.svg') {
+        if (req.method !== 'GET') {
+          json(res, 405, { ok: false, error: '方法不允许' })
+          return
+        }
+        sendExport(res, room, action === 'export.png' ? 'png' : 'svg')
+        return
+      }
+      // auth-check：密码正确即 GM（房间密码 = 写权限）
+      json(res, 200, { ok: true, gm: true })
+      return
+    }
+
+    // 获取状态（默认房间，读公开）
     if (req.method === 'GET' && url.pathname === '/api/state') {
       json(res, 200, loadState())
       return
@@ -141,38 +274,17 @@ const server = createServer(async (req, res) => {
         json(res, 401, { ok: false, error: '未授权：需要 GM 密钥' })
         return
       }
-      const body = await readBody(req)
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(body)
-      } catch {
-        json(res, 400, { ok: false, error: 'JSON 解析失败' })
-        return
-      }
-      // 直接从原始请求体读取 version：省略 = 强制覆盖（兼容旧客户端 / 简化 Bot）
-      const rawVersion = (parsed as Record<string, unknown>)?.version
-      const expected = typeof rawVersion === 'number' ? rawVersion : undefined
-      const result = saveState(parsed, expected)
-      if (result.ok) {
-        json(res, 200, { ok: true, version: result.state.version })
-      } else {
-        // 冲突：返回最新状态，客户端拉取合并
-        json(res, 409, { ok: false, error: '冲突：状态已在别处更新', state: result.current })
-      }
+      await handleSaveState(req, res)
       return
     }
 
     // 导出图片（PNG / SVG）
     if (req.method === 'GET' && url.pathname === '/api/export.png') {
-      const png = renderPng(loadState())
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' })
-      res.end(png)
+      sendExport(res, undefined, 'png')
       return
     }
     if (req.method === 'GET' && url.pathname === '/api/export.svg') {
-      const svg = buildExportSvg(loadState())
-      res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' })
-      res.end(svg)
+      sendExport(res, undefined, 'svg')
       return
     }
 
@@ -189,6 +301,7 @@ server.listen(PORT, () => {
   console.log(`  状态 API:   GET/POST /api/state（POST 需鉴权）`)
   console.log(`  鉴权验证:   GET /api/auth-check`)
   console.log(`  导出图片:   GET /api/export.png  |  /api/export.svg`)
+  console.log(`  房间:       GET/POST /api/rooms | GET/POST /api/room/<name>/state（密码=读写鉴权）`)
   console.log(`  静态托管:   Web/dist（先执行 Web 目录下 npm run build）`)
   if (GM_KEY) {
     console.log(`  写鉴权:     已启用（GM_KEY 已设置；请求带 Authorization: Bearer <GM_KEY>）`)

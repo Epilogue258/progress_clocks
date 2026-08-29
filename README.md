@@ -74,10 +74,16 @@ GM 登录：顶栏"GM 登录"输入 `server/.env` 中的 `GM_KEY`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/state` | 完整状态 JSON（公开） |
+| GET | `/api/state` | 完整状态 JSON（默认房间，公开） |
 | POST | `/api/state` | 全量覆盖保存（需 GM 密钥；带 version 走乐观锁，冲突返 409+最新） |
 | GET | `/api/auth-check` | GM 密钥验证 |
 | GET | `/api/export.png` / `.svg` | 整张导出图（QQ Bot 直接下载发群） |
+| GET | `/api/rooms` | 房间列表（公开） |
+| POST | `/api/rooms` | 新建房间（body: name + password；密码 = 该房间读写凭证；重名 409） |
+| GET | `/api/room/<name>/state` | 房间状态（需房间密码） |
+| POST | `/api/room/<name>/state` | 房间全量保存（需房间密码 + 乐观锁） |
+| GET | `/api/room/<name>/export.png` / `.svg` | 房间导出图（需房间密码） |
+| GET | `/api/room/<name>/auth-check` | 房间密码验证 |
 | GET | `/*` | Web 静态托管 |
 
 ## 统一 JSON 契约（SchemaVersion 1，定义在 common/types.ts）
@@ -109,6 +115,9 @@ GM 登录：顶栏"GM 登录"输入 `server/.env` 中的 `GM_KEY`。
 - 深浅模式（跟随系统 + 手动切换）、响应式（PC 多列 / 手机 2 列）
 - 撤销/重做（快照栈）、快捷键（Ctrl+Z/Y/N、数字键 1-3 批量填充）、长按/右键设置
 - GM 密钥登录（Bearer）、只读模式（?readonly）、导出 PNG、localStorage 离线兜底
+- **房间**（GitHub 模型）：顶栏「连接」或进入页填 服务器/房间名/密码——
+  新建 = 建仓并 push 本地状态，加入 = pull 房间状态；密码 = 读写凭证；
+  房间名支持中文/@/空格（如「龙与地下城@咖啡的房间」），`?room=名字` 可分享给玩家
 - **分离模式**：`Web/dist` 可脱离 server 单独打开（双击 file:// 或放任意静态托管），
   通过 `?server=http://IP:2333` URL 参数或 GM 弹窗「保存并连接」指向**任意**后端（一百个服务器连任一，切换时重拉状态）；
   同源托管（默认）时无需任何配置，行为与原先完全一致

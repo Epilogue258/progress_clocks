@@ -66,17 +66,86 @@ export async function verifyKey(baseUrl: string, key: string): Promise<boolean> 
   }
 }
 
+// ---------- 房间（GitHub 模型：一个 server 多房间，密码 = 读写鉴权） ----------
+
+function roomHeaders(pwd: string): Record<string, string> {
+  return { Authorization: `Bearer ${pwd}` }
+}
+
+/** 房间列表（公开） */
+export async function listRooms(baseUrl: string): Promise<string[]> {
+  const res = await fetch(`${baseUrl}/api/rooms`)
+  if (!res.ok) throw new ApiError(res.status, `获取房间列表失败: ${res.status}`)
+  const body = (await res.json()) as { rooms?: string[] }
+  return body.rooms ?? []
+}
+
+/** 新建房间：创建者设定密码（即该房间的读写凭证） */
+export async function createRoom(baseUrl: string, name: string, password: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/rooms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, password }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new ApiError(res.status, body?.error ?? `创建房间失败: ${res.status}`)
+  }
+}
+
+/** 拉取房间状态（需密码） */
+export async function fetchRoomState(baseUrl: string, room: string, pwd: string): Promise<ClockState> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, { headers: roomHeaders(pwd) })
+  if (!res.ok) throw new ApiError(res.status, `获取房间状态失败: ${res.status}`)
+  return (await res.json()) as ClockState
+}
+
+/** 全量保存房间状态（需密码；state.version = 乐观锁基线） */
+export async function saveRoomState(
+  baseUrl: string,
+  room: string,
+  pwd: string,
+  state: ClockState,
+): Promise<number> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...roomHeaders(pwd) },
+    body: JSON.stringify(state),
+  })
+  if (res.status === 409) {
+    const body = (await res.json()) as { state?: ClockState }
+    throw new ApiError(409, '冲突：状态已在别处更新', body.state)
+  }
+  if (!res.ok) throw new ApiError(res.status, `保存房间状态失败: ${res.status}`)
+  const body = (await res.json()) as { version?: number }
+  return body.version ?? 0
+}
+
+/** 验证房间密码是否有效（密码正确 = 该房间 GM，可写） */
+export async function verifyRoomKey(baseUrl: string, room: string, pwd: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/auth-check`, {
+      headers: roomHeaders(pwd),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /** 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事 */
 export function pollState(
   baseUrl: string,
   onUpdate: (state: ClockState) => void,
   intervalMs: number = 5000,
+  room?: string,
+  pwd?: string,
 ): () => void {
   let stopped = false
   const tick = async () => {
     if (stopped) return
     try {
-      onUpdate(await fetchState(baseUrl))
+      onUpdate(await (room ? fetchRoomState(baseUrl, room, pwd ?? '') : fetchState(baseUrl)))
     } catch {
       // 网络错误静默，下次轮询重试
     }

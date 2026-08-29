@@ -12,7 +12,18 @@
 import './styles.css'
 import { Store } from './state'
 import { applyTheme, render, type GmContext, type UiState } from './ui'
-import { ApiError, fetchState, pollState, saveState, verifyKey } from './api'
+import type { ClockState } from '../../common/types'
+import {
+  ApiError,
+  createRoom,
+  fetchRoomState,
+  fetchState,
+  pollState,
+  saveRoomState,
+  saveState,
+  verifyKey,
+  verifyRoomKey,
+} from './api'
 
 // server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
 // 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
@@ -32,8 +43,14 @@ function resolveApiBase(): string {
 
 let API_BASE = resolveApiBase()
 
+// 房间配置：?room= URL 参数 > localStorage 记忆（密码仅存 localStorage，不进 URL）
+const ROOM_STORAGE = 'pc-room-name'
+const ROOM_PWD_STORAGE = 'pc-room-pwd'
 const GM_KEY_STORAGE = 'pc-gm-key'
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
+
+let roomName = new URLSearchParams(location.search).get('room') ?? localStorage.getItem(ROOM_STORAGE) ?? ''
+let roomPwd = localStorage.getItem(ROOM_PWD_STORAGE) ?? ''
 
 const root = document.getElementById('app')!
 applyTheme()
@@ -48,22 +65,29 @@ if (
   store.createClock('红绸党', 6)
   store.createClock('潜入斯特朗福德', 8)
 }
-const ui: UiState = { view: 'grid', settingsClockId: null, creating: false, gmDialog: false }
+const ui: UiState = { view: 'grid', settingsClockId: null, creating: false, gmDialog: false, roomDialog: false }
 
 // ---------- GM 鉴权状态 ----------
 
-let gmKey: string | null = localStorage.getItem(GM_KEY_STORAGE)
-let gmAuthed = false
+// 房间模式：密码即 GM 凭证（进入页已验证）；默认房间：GM_KEY
+let gmKey: string | null = roomName ? roomPwd : localStorage.getItem(GM_KEY_STORAGE)
+let gmAuthed = roomName ? !!roomPwd : false
 /** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
 let dirty = false
 
 // 启动时验证本地已存的密钥是否仍有效
 if (!urlReadonly && gmKey) {
-  verifyKey(API_BASE, gmKey).then((ok) => {
+  const okPromise = roomName ? verifyRoomKey(API_BASE, roomName, gmKey) : verifyKey(API_BASE, gmKey)
+  okPromise.then((ok) => {
     gmAuthed = ok
     if (!ok) {
       gmKey = null
-      localStorage.removeItem(GM_KEY_STORAGE)
+      if (roomName) {
+        roomPwd = ''
+        localStorage.removeItem(ROOM_PWD_STORAGE)
+      } else {
+        localStorage.removeItem(GM_KEY_STORAGE)
+      }
     }
     rerender()
   })
@@ -74,12 +98,23 @@ const gm: GmContext = {
   get authed() {
     return gmAuthed
   },
+  /** 当前房间名（'' = 默认房间） */
+  get roomName() {
+    return roomName
+  },
   onSubmitKey: async (key) => {
-    const ok = await verifyKey(API_BASE, key)
+    const ok = roomName
+      ? await verifyRoomKey(API_BASE, roomName, key)
+      : await verifyKey(API_BASE, key)
     if (ok) {
       gmKey = key
       gmAuthed = true
-      localStorage.setItem(GM_KEY_STORAGE, key)
+      if (roomName) {
+        roomPwd = key
+        localStorage.setItem(ROOM_PWD_STORAGE, key)
+      } else {
+        localStorage.setItem(GM_KEY_STORAGE, key)
+      }
       rerender()
     }
     return ok
@@ -87,14 +122,19 @@ const gm: GmContext = {
   onLogout: () => {
     gmAuthed = false
     gmKey = null
-    localStorage.removeItem(GM_KEY_STORAGE)
+    if (roomName) {
+      roomPwd = ''
+      localStorage.removeItem(ROOM_PWD_STORAGE)
+    } else {
+      localStorage.removeItem(GM_KEY_STORAGE)
+    }
     rerender()
   },
   /** 当前生效的服务器地址（'' = 同源） */
   get serverBase() {
     return API_BASE
   },
-  /** 保存并切换服务器：更新配置、重拉新 server 状态、重新验证 GM 密钥 */
+  /** 保存并切换服务器：更新配置、重拉当前上下文状态、重新验证 GM 凭证 */
   onServerChange: async (base: string) => {
     const next = normalizeBase(base)
     if (dirty && !confirm('本地有尚未同步到服务器的改动，切换服务器将丢弃这些改动。继续？')) {
@@ -103,28 +143,95 @@ const gm: GmContext = {
     API_BASE = next
     localStorage.setItem(API_BASE_STORAGE, next)
     try {
-      const remote = await fetchState(API_BASE)
+      const remote = await pullCurrent()
       store.replaceState(remote)
     } catch {
       // 连接失败：配置已保存，本地数据保持可用（离线兜底），下次刷新重试
       showToast('无法连接服务器，已保持本地数据')
     }
     if (gmKey) {
-      const ok = await verifyKey(API_BASE, gmKey)
+      const ok = roomName ? await verifyRoomKey(API_BASE, roomName, gmKey) : await verifyKey(API_BASE, gmKey)
       gmAuthed = ok
       if (!ok) {
         gmKey = null
-        localStorage.removeItem(GM_KEY_STORAGE)
+        if (roomName) {
+          roomPwd = ''
+          localStorage.removeItem(ROOM_PWD_STORAGE)
+        } else {
+          localStorage.removeItem(GM_KEY_STORAGE)
+        }
       }
     }
     rerender()
     return true
   },
+  /** 加入房间（GitHub 模型：pull 到本地） */
+  onJoinRoom: async (server: string, room: string, pwd: string) => {
+    try {
+      const remote = await fetchRoomState(normalizeBase(server), room, pwd)
+      enterRoom(server, room, pwd)
+      store.replaceState(remote)
+      rerender()
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
+  },
+  /** 新建房间（GitHub 模型：新开仓库并 push 本地状态） */
+  onCreateRoom: async (server: string, room: string, pwd: string) => {
+    try {
+      await createRoom(normalizeBase(server), room, pwd)
+      enterRoom(server, room, pwd)
+      const version = await saveRoomState(API_BASE, room, pwd, store.syncState)
+      store.markSynced(version)
+      rerender()
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
+  },
 }
 
 const rerender = () =>
   render(root, store, ui, urlReadonly || !gmAuthed, rerender, gm)
+
+// ---------- 房间进入 / 同步上下文 ----------
+
+/** 保存房间配置并进入：更新 server/room/密码记忆 + URL 同步（密码不进 URL） */
+function enterRoom(server: string, room: string, pwd: string): void {
+  API_BASE = normalizeBase(server)
+  localStorage.setItem(API_BASE_STORAGE, API_BASE)
+  roomName = room
+  roomPwd = pwd
+  gmKey = pwd
+  gmAuthed = true
+  localStorage.setItem(ROOM_STORAGE, room)
+  localStorage.setItem(ROOM_PWD_STORAGE, pwd)
+  const params = new URLSearchParams(location.search)
+  if (API_BASE) params.set('server', API_BASE)
+  params.set('room', room)
+  history.replaceState(null, '', `${location.pathname}?${params.toString()}`)
+}
+
+/** 拉取当前上下文状态（房间模式拉房间状态，否则默认房间） */
+async function pullCurrent(): Promise<ClockState> {
+  return roomName ? fetchRoomState(API_BASE, roomName, roomPwd) : fetchState(API_BASE)
+}
+
+/** 推送当前状态（房间模式带密码，否则默认房间 + GM 密钥） */
+async function pushCurrent(): Promise<number> {
+  return roomName
+    ? saveRoomState(API_BASE, roomName, roomPwd, store.syncState)
+    : saveState(API_BASE, store.syncState, gmKey ?? undefined)
+}
+
 rerender()
+
+// 进入页判定：分离模式选了 server 但没进房间，或进了房间但没密码（含玩家首次加入）
+if ((API_BASE !== '' && !roomName) || (roomName && !roomPwd)) {
+  ui.roomDialog = true
+  rerender()
+}
 
 // ---------- 同步层 ----------
 
@@ -145,7 +252,7 @@ store.subscribe(() => {
   window.clearTimeout(pushTimer)
   pushTimer = window.setTimeout(async () => {
     try {
-      const version = await saveState(API_BASE, store.syncState, gmKey ?? undefined)
+      const version = await pushCurrent()
       // 推送成功：更新同步基线，避免下次操作（含撤销）携带旧版本触发假冲突
       store.markSynced(version)
       dirty = false
@@ -153,7 +260,7 @@ store.subscribe(() => {
       if (e instanceof ApiError && e.status === 409) {
         // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
         try {
-          const remote = e.latest ?? (await fetchState(API_BASE))
+          const remote = e.latest ?? (await pullCurrent())
           store.replaceState(remote)
           showToast('状态已在别处更新，已同步最新')
           rerender()
@@ -161,11 +268,16 @@ store.subscribe(() => {
           // 拉取失败静默
         }
       } else if (e instanceof ApiError && e.status === 401) {
-        // 密钥失效：清除登录态并提示重新输入
+        // 密钥/密码失效：清除登录态并提示重新输入
         gmAuthed = false
         gmKey = null
-        localStorage.removeItem(GM_KEY_STORAGE)
-        showToast('GM 密钥失效，请重新登录')
+        if (roomName) {
+          roomPwd = ''
+          localStorage.removeItem(ROOM_PWD_STORAGE)
+        } else {
+          localStorage.removeItem(GM_KEY_STORAGE)
+        }
+        showToast(roomName ? '房间密码失效，请重新输入' : 'GM 密钥失效，请重新登录')
         rerender()
       }
       // 其他错误（网络等）静默
@@ -174,7 +286,7 @@ store.subscribe(() => {
 })
 
 // 启动：拉取 server 状态（server 为权威；失败保持本地数据，离线可用）
-fetchState(API_BASE)
+pullCurrent()
   .then((remote) => {
     store.replaceState(remote)
     rerender()
@@ -185,10 +297,16 @@ fetchState(API_BASE)
 
 // 玩家只读模式：轮询 server（GM 端不轮询，靠推送）
 if (urlReadonly) {
-  pollState(API_BASE, (remote) => {
-    store.replaceState(remote)
-    rerender()
-  })
+  pollState(
+    API_BASE,
+    (remote) => {
+      store.replaceState(remote)
+      rerender()
+    },
+    5000,
+    roomName,
+    roomPwd,
+  )
 }
 
 // ---------- 快捷键 ----------
@@ -219,7 +337,10 @@ window.addEventListener('keydown', (e) => {
   if (urlReadonly || !gmAuthed) return
 
   if (e.key === 'Escape') {
-    if (ui.creating) {
+    if (ui.roomDialog) {
+      ui.roomDialog = false
+      rerender()
+    } else if (ui.creating) {
       ui.creating = false
       rerender()
     } else if (ui.gmDialog) {

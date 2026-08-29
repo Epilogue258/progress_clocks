@@ -12,9 +12,14 @@ export interface UiState {
   creating: boolean
   /** GM 登录弹窗开关 */
   gmDialog: boolean
+  /** 房间连接弹窗开关 */
+  roomDialog: boolean
 }
 
 export type Rerender = () => void
+
+/** 房间操作结果 */
+export type RoomResult = { ok: true } | { ok: false; error: string }
 
 /** GM 鉴权上下文（由 main.ts 提供，ui.ts 只负责展示与收集输入） */
 export interface GmContext {
@@ -30,6 +35,12 @@ export interface GmContext {
   serverBase: string
   /** 保存并切换服务器（main 侧连接新 server、重拉状态、重新验证密钥） */
   onServerChange: (base: string) => Promise<boolean>
+  /** 当前房间名（'' = 默认房间） */
+  roomName: string
+  /** 加入房间（main 侧 pull 到本地） */
+  onJoinRoom: (server: string, room: string, pwd: string) => Promise<RoomResult>
+  /** 新建房间（main 侧建仓 + push 本地状态） */
+  onCreateRoom: (server: string, room: string, pwd: string) => Promise<RoomResult>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -81,6 +92,9 @@ export function render(
       rerender()
     })
     root.append(fab)
+  }
+  if (ui.roomDialog) {
+    root.append(renderRoomModal(ui, gm, rerender))
   }
   if (!gm.urlReadonly && ui.gmDialog) {
     root.append(renderGmLoginModal(ui, gm, rerender))
@@ -134,6 +148,15 @@ function renderTopbar(
 ): HTMLElement {
   const bar = el('header', 'topbar')
   bar.append(el('span', 'title', '进度钟'))
+
+  // 房间连接入口（所有模式可见：GM 建房间 / 玩家加入）
+  const roomBtn = el('button', 'tbtn', gm.roomName ? `房间 ${gm.roomName}` : '连接')
+  roomBtn.title = '连接服务器房间（加入 / 新建）'
+  roomBtn.addEventListener('click', () => {
+    ui.roomDialog = true
+    rerender()
+  })
+  bar.append(roomBtn)
 
   // GM 登录状态（玩家只读模式下隐藏入口）
   if (!gm.urlReadonly) {
@@ -575,5 +598,71 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
 
   modal.append(hint, input, actions, serverInput, serverActions)
   input.focus()
+  return backdrop
+}
+
+// ---------- 房间连接弹窗（GitHub 模型：加入 = pull，新建 = 建仓 + push） ----------
+
+function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
+  const { backdrop, modal, close } = modalShell('连接房间', () => {
+    ui.roomDialog = false
+    rerender()
+  })
+
+  const hint = el('div', 'gm-hint', '')
+
+  const serverInput = document.createElement('input')
+  serverInput.type = 'text'
+  serverInput.placeholder = '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）'
+  serverInput.value = gm.serverBase
+  serverInput.autocomplete = 'off'
+
+  const roomInput = document.createElement('input')
+  roomInput.type = 'text'
+  roomInput.placeholder = '房间名（字母/数字/下划线/连字符）'
+  roomInput.value = gm.roomName
+  roomInput.autocomplete = 'off'
+
+  const pwdInput = document.createElement('input')
+  pwdInput.type = 'password'
+  pwdInput.placeholder = '房间密码（读写凭证，需发给玩家）'
+  pwdInput.autocomplete = 'off'
+
+  const actions = el('div', 'modal-actions')
+  const joinBtn = el('button', 'tbtn primary', '加入房间')
+  const createBtn = el('button', 'tbtn', '新建房间')
+
+  const submit = async (create: boolean) => {
+    const server = serverInput.value.trim()
+    const room = roomInput.value.trim()
+    const pwd = pwdInput.value.trim()
+    if (!room) {
+      hint.textContent = '请填写房间名'
+      return
+    }
+    if (!pwd) {
+      hint.textContent = '请填写房间密码'
+      return
+    }
+    hint.textContent = create ? '创建中…' : '连接中…'
+    const result = create ? await gm.onCreateRoom(server, room, pwd) : await gm.onJoinRoom(server, room, pwd)
+    if (result.ok) {
+      close()
+    } else {
+      hint.textContent = result.error
+    }
+  }
+  joinBtn.addEventListener('click', () => void submit(false))
+  createBtn.addEventListener('click', () => void submit(true))
+  roomInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void submit(false)
+  })
+  pwdInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void submit(false)
+  })
+  actions.append(createBtn, joinBtn)
+
+  modal.append(hint, serverInput, roomInput, pwdInput, actions)
+  roomInput.focus()
   return backdrop
 }
