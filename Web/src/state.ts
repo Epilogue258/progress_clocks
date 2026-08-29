@@ -78,16 +78,19 @@ export class Store {
     for (const fn of this.listeners) fn()
   }
 
-  /** 每次变更：压快照、清重做栈、落盘、通知 */
-  private commit() {
+  /**
+   * 统一变更入口：压入「变更前」快照 -> 执行变更 -> 落盘 -> 通知。
+   *
+   * 快照必须在 fn() **之前**压栈，不能在之后：
+   * 变更后压栈会让栈顶恒等于当前状态，撤销时弹出的是现状自己，
+   * 表现为「第一次撤销没反应、重做错乱」。
+   */
+  private mutate(fn: () => void): void {
     this.undoStack.push(structuredClone(this.state))
     if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift()
     this.redoStack = []
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state))
-    } catch {
-      // 存储失败（隐私模式等）静默，仅本次会话可用
-    }
+    fn()
+    this.persist()
     this.notify()
   }
 
@@ -129,35 +132,39 @@ export class Store {
       fill: 0,
       color: PALETTE[Object.keys(this.state.clocks).length % PALETTE.length],
     }
-    this.state.clocks[clock.id] = clock
-    this.currentClockId = clock.id
-    this.commit()
+    this.mutate(() => {
+      this.state.clocks[clock.id] = clock
+      this.currentClockId = clock.id
+    })
     return clock
   }
 
   updateClock(id: string, patch: Partial<Omit<ProgressClock, 'id'>>): void {
-    const clock = this.state.clocks[id]
-    if (!clock) return
-    Object.assign(clock, patch)
-    clock.fill = Math.max(0, Math.min(clock.max, Math.floor(clock.fill)))
-    clock.max = Math.max(1, Math.min(10, Math.floor(clock.max)))
-    this.commit()
+    if (!this.state.clocks[id]) return
+    this.mutate(() => {
+      const clock = this.state.clocks[id]
+      Object.assign(clock, patch)
+      clock.fill = Math.max(0, Math.min(clock.max, Math.floor(clock.fill)))
+      clock.max = Math.max(1, Math.min(10, Math.floor(clock.max)))
+    })
   }
 
   deleteClock(id: string): void {
     if (!this.state.clocks[id]) return
-    delete this.state.clocks[id]
-    if (this.currentClockId === id) this.currentClockId = null
-    this.commit()
+    this.mutate(() => {
+      delete this.state.clocks[id]
+      if (this.currentClockId === id) this.currentClockId = null
+    })
   }
 
   /** 填充（正数）或清除（负数），默认 +1；数字键 1/2/3 走这里 */
   increment(id: string, delta = 1): void {
-    const clock = this.state.clocks[id]
-    if (!clock) return
-    clock.fill = Math.max(0, Math.min(clock.max, clock.fill + delta))
-    this.currentClockId = id
-    this.commit()
+    if (!this.state.clocks[id]) return
+    this.mutate(() => {
+      const clock = this.state.clocks[id]
+      clock.fill = Math.max(0, Math.min(clock.max, clock.fill + delta))
+      this.currentClockId = id
+    })
   }
 
   get canUndo(): boolean {
