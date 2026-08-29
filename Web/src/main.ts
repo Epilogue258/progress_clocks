@@ -79,6 +79,7 @@ const ui: UiState = {
   gmDialog: false,
   roomDialog: false,
   roomPrefill: '',
+  sidebarOpen: false,
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -186,6 +187,7 @@ const gm: GmContext = {
       const remote = await fetchRoomState(normalizeBase(server), room, joinPwd)
       enterRoom(server, room, joinPwd)
       store.replaceState(remote)
+      ui.sidebarOpen = false
       if (gmPwd) {
         const ok = await verifyRoomKey(API_BASE, room, gmPwd)
         if (ok) {
@@ -207,6 +209,7 @@ const gm: GmContext = {
     try {
       await createRoom(normalizeBase(server), room, joinPwd, gmPwd)
       enterRoom(server, room, joinPwd)
+      ui.sidebarOpen = false
       gmKey = gmPwd
       gmAuthed = true
       localStorage.setItem(ROOM_GM_STORAGE, gmPwd)

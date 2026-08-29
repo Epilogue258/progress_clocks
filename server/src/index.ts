@@ -149,7 +149,12 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
   }
   try {
     const body = await readFile(filePath)
-    res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' })
+    // html 不缓存：index.html 引用带 hash 的资源，入口页始终检查最新，避免浏览器缓存旧构建
+    const isHtml = extname(filePath) === '.html'
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream',
+      ...(isHtml ? { 'Cache-Control': 'no-cache' } : {}),
+    })
     res.end(body)
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })

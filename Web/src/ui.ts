@@ -16,6 +16,8 @@ export interface UiState {
   roomDialog: boolean
   /** 侧边栏点击预填的房间名 */
   roomPrefill: string
+  /** 侧边栏展开开关（汉堡菜单） */
+  sidebarOpen: boolean
 }
 
 export type Rerender = () => void
@@ -88,7 +90,7 @@ export function render(
   root.textContent = ''
   root.append(renderTopbar(store, ui, readonly, rerender, gm))
   const body = el('div', 'main-body')
-  body.append(renderRoomSidebar(ui, gm, rerender))
+  if (ui.sidebarOpen) body.append(renderRoomSidebar(ui, gm, rerender))
   body.append(
     ui.view === 'grid'
       ? renderGrid(store, ui, readonly, rerender)
@@ -157,6 +159,15 @@ function renderTopbar(
   gm: GmContext,
 ): HTMLElement {
   const bar = el('header', 'topbar')
+  // 汉堡菜单：展开/收起侧边栏（房间列表）
+  const menuBtn = el('button', 'tbtn menu-btn', '☰')
+  menuBtn.title = '展开/收起房间列表'
+  menuBtn.setAttribute('aria-label', '展开/收起侧边栏')
+  menuBtn.addEventListener('click', () => {
+    ui.sidebarOpen = !ui.sidebarOpen
+    rerender()
+  })
+  bar.append(menuBtn)
   bar.append(el('span', 'title', '进度钟'))
 
   // 房间连接入口（所有模式可见：GM 建房间 / 玩家加入）
