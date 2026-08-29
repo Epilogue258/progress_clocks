@@ -15,6 +15,10 @@ captures/
 server/data/
 server/.env
 
+# Python（server/api-check.py 的缓存产物）
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 Thumbs.db
