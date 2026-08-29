@@ -153,6 +153,19 @@ function makeInput(
   return input
 }
 
+/**
+ * 规范化 hex 颜色：#abc / abc / #aabbcc / aabbcc 都收，统一成小写 #rrggbb。
+ * 非法返回 null，由调用方决定是提示还是忽略。
+ */
+function normalizeHexColor(raw: string | undefined): string | null {
+  const s = (raw ?? '').trim().replace(/^#/, '')
+  if (/^[0-9a-fA-F]{3}$/.test(s)) {
+    return `#${s[0]}${s[0]}${s[1]}${s[1]}${s[2]}${s[2]}`.toLowerCase()
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(s)) return `#${s.toLowerCase()}`
+  return null
+}
+
 /** 新建 / 设置弹窗的通用外壳：关闭时回调 onClose（清状态 + 重渲染） */
 function modalShell(
   title: string,
@@ -536,23 +549,35 @@ function renderSettings(
     rerender()
   })
 
-  // 填充（滑块）
+  // 填充：滑条 + 手输数字。滑条快，但要精确值、或格数很大不便拖时手输更直接
   modal.append(el('label', 'field', '填充'))
   const fillRange = document.createElement('input')
   fillRange.type = 'range'
   fillRange.min = '0'
   fillRange.max = String(clock.max)
   fillRange.value = String(clock.fill)
+  const fillInput = makeInput('number', '', String(clock.fill))
+  fillInput.className = 'text-input fill-input'
+  fillInput.min = '0'
+  fillInput.max = String(clock.max)
   const fillLabel = el('span', 'fill-value', `${clock.fill}/${clock.max}`)
   const fillRow = el('div', 'fill-row')
-  fillRow.append(fillRange, fillLabel)
+  fillRow.append(fillRange, fillInput, fillLabel)
   fillRange.addEventListener('input', () => {
+    // 拖动过程只更新显示，不写 store——否则每一帧都会压一次撤销栈
     fillLabel.textContent = `${fillRange.value}/${clock.max}`
+    fillInput.value = fillRange.value
   })
-  fillRange.addEventListener('change', () => {
-    store.updateClock(clock.id, { fill: Number(fillRange.value) })
+  const commitFill = (raw: string): void => {
+    const next = clampInt(Number(raw), 0, clock.max)
+    fillRange.value = String(next)
+    fillInput.value = String(next)
+    fillLabel.textContent = `${next}/${clock.max}`
+    store.updateClock(clock.id, { fill: next })
     rerender()
-  })
+  }
+  fillRange.addEventListener('change', () => commitFill(fillRange.value))
+  fillInput.addEventListener('change', () => commitFill(fillInput.value))
   modal.append(fillRow)
 
   // 颜色
@@ -569,6 +594,44 @@ function renderSettings(
     colorRow.append(swatch)
   }
   modal.append(colorRow)
+
+  // 自定义颜色：取色器 + 手输 hex。色板只有 8 色，跑团里想区分「同一危险的不同来源」时不够用
+  const colorCustom = el('div', 'color-custom')
+  const picker = makeInput('color', '', normalizeHexColor(clock.color) ?? '#888888')
+  picker.className = 'color-picker'
+  const hexInput = makeInput('text', '#e53935', clock.color ?? '')
+  hexInput.className = 'text-input hex-input'
+  const hexHint = el('div', 'hex-hint', '')
+  colorCustom.append(picker, hexInput)
+  modal.append(colorCustom, hexHint)
+
+  const commitColor = (raw: string): void => {
+    const next = normalizeHexColor(raw)
+    if (!next) return
+    store.updateClock(clock.id, { color: next })
+    rerender()
+  }
+  // 取色器：拖动过程只联动文本框，松手（change）才落库，避免每帧压一次撤销栈
+  picker.addEventListener('input', () => {
+    hexInput.value = picker.value
+    hexHint.textContent = ''
+  })
+  picker.addEventListener('change', () => commitColor(picker.value))
+  // 手输：input 只做格式提示，change（回车/失焦）才落库，非法则还原
+  hexInput.addEventListener('input', () => {
+    const next = normalizeHexColor(hexInput.value)
+    hexHint.textContent = hexInput.value.trim() && !next ? '格式应为 #RGB 或 #RRGGBB' : ''
+    if (next) picker.value = next
+  })
+  hexInput.addEventListener('change', () => {
+    const next = normalizeHexColor(hexInput.value)
+    if (next) {
+      commitColor(next)
+    } else {
+      hexHint.textContent = '格式应为 #RGB 或 #RRGGBB'
+      hexInput.value = clock.color ?? ''
+    }
+  })
 
   // 操作
   const actions = el('div', 'modal-actions')

@@ -518,6 +518,58 @@ body.drag-active {
   outline-color: var(--text);
 }
 
+.color-custom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.color-picker {
+  appearance: none;
+  flex: none;
+  width: 46px;
+  height: 38px;
+  padding: 3px;
+  border: none;
+  border-radius: 10px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+
+/* 去掉浏览器给取色器套的默认边框，与整体圆角风格对齐 */
+.color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-picker::-webkit-color-swatch {
+  border: none;
+  border-radius: 7px;
+}
+
+.color-picker::-moz-color-swatch {
+  border: none;
+  border-radius: 7px;
+}
+
+.hex-input {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.hex-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+  min-height: 16px;
+}
+
+.fill-input {
+  flex: none;
+  width: 78px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .modal-actions {
   display: flex;
   justify-content: space-between;
