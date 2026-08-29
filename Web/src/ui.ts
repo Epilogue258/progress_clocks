@@ -96,6 +96,7 @@ export function render(
       ? renderGrid(store, ui, readonly, rerender)
       : renderList(store, ui, readonly, rerender),
   )
+  root.append(body)
   if (!readonly) {
     const fab = el('button', 'fab', '+')
     fab.setAttribute('aria-label', '新建进度钟')

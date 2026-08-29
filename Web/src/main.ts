@@ -56,8 +56,6 @@ const urlReadonly = new URLSearchParams(location.search).has('readonly')
 
 let roomName = new URLSearchParams(location.search).get('room') ?? localStorage.getItem(ROOM_STORAGE) ?? ''
 let roomJoinPwd = localStorage.getItem(ROOM_JOIN_STORAGE) ?? ''
-/** 是否已填过加入密码（含空 = 公开房间），用于进入页判定 */
-let roomJoinSet = localStorage.getItem(ROOM_JOIN_STORAGE) !== null
 
 const root = document.getElementById('app')!
 applyTheme()
@@ -236,7 +234,6 @@ const gm: GmContext = {
       await deleteRoom(API_BASE, room, gmKey ?? '')
       roomName = ''
       roomJoinPwd = ''
-      roomJoinSet = false
       gmKey = null
       gmAuthed = false
       localStorage.removeItem(ROOM_STORAGE)
@@ -267,7 +264,6 @@ function enterRoom(server: string, room: string, joinPwd: string): void {
   localStorage.setItem(API_BASE_STORAGE, API_BASE)
   roomName = room
   roomJoinPwd = joinPwd
-  roomJoinSet = true
   localStorage.setItem(ROOM_STORAGE, room)
   localStorage.setItem(ROOM_JOIN_STORAGE, joinPwd)
   const params = new URLSearchParams(location.search)
@@ -290,8 +286,9 @@ async function pushCurrent(): Promise<number> {
 
 rerender()
 
-// 进入页判定：分离模式选了 server 但没进房间，或进了房间但没填过加入密码（含玩家首次加入）
-if ((API_BASE !== '' && !roomName) || (roomName && !roomJoinSet)) {
+// 进入页判定：仅分离模式（配了 server）且还没进房间时弹窗选择/新建
+// 有 ?room= 时直接进入（公开房间免密；私有房间拉取 401 后由 bootstrapPull 弹窗）
+if (API_BASE !== '' && !roomName) {
   ui.roomDialog = true
   rerender()
 }
@@ -353,9 +350,15 @@ async function bootstrapPull(): Promise<void> {
     const remote = await pullCurrent()
     store.replaceState(remote)
     rerender()
-  } catch {
-    // 离线 / server 刚重启：5s 后重试；成功前本地数据可用
-    setTimeout(() => void bootstrapPull(), 5000)
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401 && roomName) {
+      // 私有房间 / 加入密码记忆失效：弹连接弹窗重新输入
+      ui.roomDialog = true
+      rerender()
+    } else {
+      // 离线 / server 刚重启：5s 后重试；成功前本地数据可用
+      setTimeout(() => void bootstrapPull(), 5000)
+    }
   }
 }
 void bootstrapPull()
