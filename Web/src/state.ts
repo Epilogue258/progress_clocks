@@ -1,5 +1,13 @@
 import type { ClockState, ProgressClock } from '../../common/types'
-import { SCHEMA_VERSION, createClockId, createEmptyState, parseState } from '../../common/types'
+import {
+  CLOCK_MAX_SEGMENTS,
+  CLOCK_MIN_SEGMENTS,
+  SCHEMA_VERSION,
+  clampInt,
+  createClockId,
+  createEmptyState,
+  parseState,
+} from '../../common/types'
 
 const STORAGE_KEY = 'progress-clocks:state'
 const UNDO_LIMIT = 100
@@ -128,7 +136,7 @@ export class Store {
     const clock: ProgressClock = {
       id: createClockId(),
       name,
-      max,
+      max: clampInt(max, CLOCK_MIN_SEGMENTS, CLOCK_MAX_SEGMENTS),
       fill: 0,
       color: PALETTE[Object.keys(this.state.clocks).length % PALETTE.length],
     }
@@ -144,8 +152,11 @@ export class Store {
     this.mutate(() => {
       const clock = this.state.clocks[id]
       Object.assign(clock, patch)
-      clock.fill = Math.max(0, Math.min(clock.max, Math.floor(clock.fill)))
-      clock.max = Math.max(1, Math.min(10, Math.floor(clock.max)))
+      // 先钳 max 再钳 fill：fill 的上界就是 max。
+      // 边界常量取自契约（common/types），以前这里写的是 [1,10]，
+      // 与服务端 parseState 的 [2,10] 不一致——本地设 1 格推送后会被改成 2 格，刷新跳变。
+      clock.max = clampInt(clock.max, CLOCK_MIN_SEGMENTS, CLOCK_MAX_SEGMENTS)
+      clock.fill = clampInt(clock.fill, 0, clock.max)
     })
   }
 
@@ -162,7 +173,7 @@ export class Store {
     if (!this.state.clocks[id]) return
     this.mutate(() => {
       const clock = this.state.clocks[id]
-      clock.fill = Math.max(0, Math.min(clock.max, clock.fill + delta))
+      clock.fill = clampInt(clock.fill + delta, 0, clock.max)
       this.currentClockId = id
     })
   }

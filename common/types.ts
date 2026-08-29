@@ -14,6 +14,15 @@
 
 export const SCHEMA_VERSION = 1
 
+/** 钟的格数边界（契约级）：服务端解析与前端输入共用同一组常量，避免两端各写一份后漂移 */
+export const CLOCK_MIN_SEGMENTS = 2
+export const CLOCK_MAX_SEGMENTS = 10
+
+/** 钳制为 [lo, hi] 区间内的整数 */
+export function clampInt(value: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, Math.floor(value)))
+}
+
 /** 房间名白名单：任意非路径分隔符/控制字符/Windows 保留字符，1-32 字符。
  * 允许中文/@/空格等自然语言（如「龙与地下城@咖啡的房间」），
  * 防目录穿越的关键是排除 / \ 与 Windows 保留字符（<>:"|?*），另排除 . 与 .. */
@@ -78,8 +87,9 @@ export function parseState(raw: unknown): ClockState {
     for (const [id, value] of Object.entries(obj.clocks as Record<string, unknown>)) {
       const c = value as Record<string, unknown>
       if (typeof c !== 'object' || c === null) continue
-      const max = typeof c.max === 'number' ? Math.max(2, Math.min(10, Math.floor(c.max))) : 4
-      const fill = typeof c.fill === 'number' ? Math.max(0, Math.min(max, Math.floor(c.fill))) : 0
+      const max =
+        typeof c.max === 'number' ? clampInt(c.max, CLOCK_MIN_SEGMENTS, CLOCK_MAX_SEGMENTS) : 4
+      const fill = typeof c.fill === 'number' ? clampInt(c.fill, 0, max) : 0
       state.clocks[id] = {
         id,
         name: typeof c.name === 'string' ? c.name : '',
