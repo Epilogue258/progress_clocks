@@ -102,6 +102,7 @@ if (!urlReadonly && gmKey) {
       }
     }
     rerender()
+    syncPolling()
   })
 }
 
@@ -132,6 +133,7 @@ const gm: GmContext = {
         localStorage.setItem(GM_KEY_STORAGE, key)
       }
       rerender()
+      syncPolling()
     }
     return ok
   },
@@ -144,6 +146,7 @@ const gm: GmContext = {
       localStorage.removeItem(GM_KEY_STORAGE)
     }
     rerender()
+    syncPolling()
   },
   /** 当前生效的服务器地址（'' = 同源） */
   get serverBase() {
@@ -177,6 +180,7 @@ const gm: GmContext = {
       }
     }
     rerender()
+    syncPolling()
     return true
   },
   /** 加入房间（GitHub 模型：pull 到本地；gmPwd 可空 = 只读玩家） */
@@ -197,6 +201,7 @@ const gm: GmContext = {
         }
       }
       rerender()
+      syncPolling()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -215,6 +220,7 @@ const gm: GmContext = {
       const version = await saveRoomState(API_BASE, room, gmPwd, { ...store.syncState, version: 0 })
       store.markSynced(version)
       rerender()
+      syncPolling()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -245,6 +251,7 @@ const gm: GmContext = {
       const qs = params.toString()
       history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
       rerender()
+      syncPolling()
       showToast(`房间「${room}」已删除`)
       return { ok: true as const }
     } catch (e) {
@@ -338,6 +345,7 @@ store.subscribe(() => {
         }
         showToast(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
         rerender()
+        syncPolling()
       }
       // 其他错误（网络等）静默
     }
@@ -353,6 +361,8 @@ async function bootstrapPull(): Promise<void> {
   } catch (e) {
     if (e instanceof ApiError && e.status === 401 && roomName) {
       // 私有房间 / 加入密码记忆失效：弹连接弹窗重新输入
+      // 停轮询：密码不对时每 5s 的失败请求无意义，等用户重新输入后再起
+      stopPolling()
       ui.roomDialog = true
       rerender()
     } else {
@@ -363,11 +373,19 @@ async function bootstrapPull(): Promise<void> {
 }
 void bootstrapPull()
 
-// 玩家只读模式：轮询 server（GM 端不轮询，靠推送）
-if (urlReadonly) {
-  pollState(
+// ---------- 只读端轮询 ----------
+// 是否轮询由「是否持有写凭证」决定，而不是 URL 参数：
+// 分享给玩家的 ?room=xxx 通常不带 readonly，此前因此既不轮询也不推送，全程静态快照。
+// GM 端自身靠推送，不轮询；登录态或房间/服务器变化时重建，避免沿用旧的 room 与密码。
+let pollingStop: (() => void) | null = null
+
+function startPolling(): void {
+  pollingStop?.()
+  pollingStop = pollState(
     API_BASE,
     (remote) => {
+      // GM 端尚有未推送成功的改动时不覆盖本地，防丢改动
+      if (gmAuthed && dirty) return
       store.replaceState(remote)
       rerender()
     },
@@ -376,6 +394,20 @@ if (urlReadonly) {
     roomJoinPwd,
   )
 }
+
+function stopPolling(): void {
+  pollingStop?.()
+  pollingStop = null
+}
+
+/** 按当前登录态重建轮询：GM 停，非 GM 起 */
+function syncPolling(): void {
+  if (gmAuthed) stopPolling()
+  else startPolling()
+}
+
+// 启动即按「是否已持有写凭证」决定轮询；GM 密钥验证通过后 syncPolling 会停掉它
+syncPolling()
 
 // ---------- 快捷键 ----------
 
