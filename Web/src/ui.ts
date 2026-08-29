@@ -1,4 +1,5 @@
 import type { ProgressClock } from '../../common/types'
+import { CLOCK_MAX_SEGMENTS, CLOCK_MIN_SEGMENTS, clampInt } from '../../common/types'
 import { PALETTE, Store } from './state'
 import { svgClock } from './clock-svg'
 import { exportStateAsPng } from './export'
@@ -129,6 +130,26 @@ function el(tag: string, className: string, text?: string): HTMLElement {
   if (tag === 'button') node.setAttribute('type', 'button')
   if (text !== undefined) node.textContent = text
   return node
+}
+
+/**
+ * 创建输入框。文本类统一挂 .text-input 样式类——
+ * 此前各处手写 createElement('input') 再逐个设属性，
+ * 一旦 CSS 选择器漏掉某个 type（比如 password）就会掉回浏览器默认外观。
+ * type='color' 不挂该类（取色器有自己的尺寸规则）。
+ */
+function makeInput(
+  type: 'text' | 'password' | 'number' | 'color',
+  placeholder = '',
+  value = '',
+): HTMLInputElement {
+  const input = document.createElement('input')
+  input.type = type
+  if (type !== 'color') input.className = 'text-input'
+  if (placeholder) input.placeholder = placeholder
+  if (value) input.value = value
+  input.autocomplete = 'off'
+  return input
 }
 
 /** 新建 / 设置弹窗的通用外壳：关闭时回调 onClose（清状态 + 重渲染） */
@@ -398,14 +419,16 @@ function mountMaxPicker(
     buttons.set(n, btn)
     btnRow.append(btn)
   }
-  const numInput = document.createElement('input')
-  numInput.type = 'number'
-  numInput.min = '2'
-  numInput.max = '10'
-  numInput.value = String(initial)
+  const numInput = makeInput('number', '', String(initial))
+  numInput.min = String(CLOCK_MIN_SEGMENTS)
+  numInput.max = String(CLOCK_MAX_SEGMENTS)
   numInput.addEventListener('change', () => {
+    // 手输可能越界（如 0 或 99）：先钳回契约区间并回写输入框，避免「显示 1 实际 2」
+    const next = clampInt(Number(numInput.value), CLOCK_MIN_SEGMENTS, CLOCK_MAX_SEGMENTS)
+    numInput.value = String(next)
     for (const b of buttons.values()) b.classList.remove('selected')
-    onChange(Number(numInput.value))
+    if ((QUICK_MAX as number[]).includes(next)) buttons.get(next)?.classList.add('selected')
+    onChange(next)
   })
   container.append(btnRow, numInput)
 }
@@ -422,9 +445,7 @@ function renderNewClockModal(
     rerender()
   })
 
-  const nameInput = document.createElement('input')
-  nameInput.type = 'text'
-  nameInput.placeholder = '钟名（如：内部巡逻）'
+  const nameInput = makeInput('text', '钟名（如：内部巡逻）')
   nameInput.maxLength = 40
   modal.append(el('label', 'field', '名字'))
   modal.append(nameInput)
@@ -473,9 +494,7 @@ function renderSettings(
   })
 
   // 名字
-  const nameInput = document.createElement('input')
-  nameInput.type = 'text'
-  nameInput.value = clock.name
+  const nameInput = makeInput('text', '', clock.name)
   nameInput.maxLength = 40
   nameInput.addEventListener('change', () => {
     store.updateClock(clock.id, { name: nameInput.value.trim() })
@@ -557,10 +576,7 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
   }
 
   const hint = el('div', 'gm-hint', '')
-  const input = document.createElement('input')
-  input.type = 'password'
-  input.placeholder = gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥'
-  input.autocomplete = 'off'
+  const input = makeInput('password', gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥')
 
   const actions = el('div', 'modal-actions')
   const submit = el('button', 'tbtn primary', gm.authed ? '更换密钥' : '验证并登录')
@@ -590,11 +606,11 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
   actions.append(submit)
 
   // 服务器连接（分离模式）：Web 可指向任意后端；留空 = 同源托管
-  const serverInput = document.createElement('input')
-  serverInput.type = 'text'
-  serverInput.placeholder = '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）'
-  serverInput.value = gm.serverBase
-  serverInput.autocomplete = 'off'
+  const serverInput = makeInput(
+    'text',
+    '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
+    gm.serverBase,
+  )
 
   const serverActions = el('div', 'modal-actions')
   const saveServer = el('button', 'tbtn', '保存并连接')
@@ -634,28 +650,17 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
 
   const hint = el('div', 'gm-hint', '')
 
-  const serverInput = document.createElement('input')
-  serverInput.type = 'text'
-  serverInput.placeholder = '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）'
-  serverInput.value = gm.serverBase
-  serverInput.autocomplete = 'off'
+  const serverInput = makeInput(
+    'text',
+    '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
+    gm.serverBase,
+  )
 
-  const roomInput = document.createElement('input')
-  roomInput.type = 'text'
-  roomInput.placeholder = '房间名'
-  roomInput.value = ui.roomPrefill || gm.roomName
-  roomInput.autocomplete = 'off'
+  const roomInput = makeInput('text', '房间名', ui.roomPrefill || gm.roomName)
 
-  const pwdInput = document.createElement('input')
-  pwdInput.type = 'password'
-  pwdInput.placeholder = '加入密码（可留空 = 公开房间，发给玩家）'
-  pwdInput.value = gm.roomJoinPwd
-  pwdInput.autocomplete = 'off'
+  const pwdInput = makeInput('password', '加入密码（可留空 = 公开房间，发给玩家）', gm.roomJoinPwd)
 
-  const gmInput = document.createElement('input')
-  gmInput.type = 'password'
-  gmInput.placeholder = 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）'
-  gmInput.autocomplete = 'off'
+  const gmInput = makeInput('password', 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）')
 
   const actions = el('div', 'modal-actions')
   const joinBtn = el('button', 'tbtn primary', '加入房间')

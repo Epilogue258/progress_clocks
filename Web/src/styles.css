@@ -383,17 +383,35 @@ body {
   margin-top: 6px;
 }
 
-.modal input[type='text'],
-.modal input[type='number'] {
+/* 文本类输入框统一外观。
+   此前只列出了 text / number，password 掉回浏览器默认样式（白底、不同字号与内边距），
+   看着像另一个组件。改成「除滑块/取色器/勾选框外一律适用」，以后新增 type 不会再漏。 */
+.text-input,
+.modal input:not([type='range']):not([type='color']):not([type='checkbox']):not([type='radio']):not([type='file']) {
   appearance: none;
   width: 100%;
   border: none;
+  outline: none;
   background: var(--field-bg);
   color: var(--text);
+  font-family: inherit;
   font-size: 16px;
   font-weight: 600;
   padding: 12px 14px;
   border-radius: 12px;
+  transition: box-shadow 0.2s;
+}
+
+.text-input::placeholder,
+.modal input::placeholder {
+  color: var(--text-dim);
+  font-weight: 500;
+  opacity: 1; /* Safari 默认压低 placeholder 透明度，统一拉满 */
+}
+
+.text-input:focus,
+.modal input:not([type='range']):focus {
+  box-shadow: 0 0 0 2px var(--text-dim);
 }
 
 .fill-row {
