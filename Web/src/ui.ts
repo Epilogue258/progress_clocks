@@ -121,6 +121,8 @@ export interface GmContext {
   onForgetRoom: (entry: KnownRoom) => void
   /** 删除房间（需已登录 GM；不可恢复，调用方先确认） */
   onDeleteRoom: (room: string) => Promise<RoomResult>
+  /** 退出当前房间回到默认房间（服务器上的房间保留；本地未同步改动会丢，调用方先确认） */
+  onLeaveRoom: () => Promise<RoomResult>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -990,7 +992,25 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   }
   actions.append(createBtn, joinBtn)
 
-  // 删除当前房间（仅已登录 GM；不可恢复，需确认）
+  // 房间内才有的两个动作：退出（服务器上的房间留着）与删除（不可恢复）。
+  // 放同一行而不是各占一行——退出不是破坏性操作，不该和删除一样有分量
+  const roomActions = el('div', 'modal-actions')
+  if (gm.roomName) {
+    const leaveBtn = el('button', 'tbtn', '退出房间')
+    leaveBtn.title = '回到默认房间；服务器上的房间保留'
+    // 确认放在 main 侧：只有那儿知道本地有没有未同步的改动（dirty）。
+    // 与加入 / 切换房间同一个口径——没事就别拿弹窗烦人
+    leaveBtn.addEventListener('click', async () => {
+      const result = await gm.onLeaveRoom()
+      if (result.ok) {
+        close()
+      } else {
+        ui.roomError = result.error
+        rerender()
+      }
+    })
+    roomActions.append(leaveBtn)
+  }
   if (gm.authed && gm.roomName) {
     const delBtn = el('button', 'tbtn danger', '删除当前房间')
     delBtn.title = '删除后所有进度钟将丢失，无法恢复'
@@ -1004,10 +1024,12 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
         rerender()
       }
     })
-    modal.append(delBtn)
+    roomActions.append(delBtn)
   }
 
   modal.append(hint, serverNote, roomInput, pwdInput, gmInput, actions)
+  // 空的行会白留一道 gap，只有真有按钮时才挂上去
+  if (roomActions.children.length) modal.append(roomActions)
   roomInput.focus()
   return backdrop
 }

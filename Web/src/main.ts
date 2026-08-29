@@ -317,31 +317,31 @@ const gm: GmContext = {
     forgetRoom(entry.server, entry.room)
     rerender()
   },
-  /** 删除房间（GM 密码已在登录态；删除后退出房间回到默认状态） */
+  /** 删除房间（GM 密码已在登录态；删除后自动退回默认房间） */
   onDeleteRoom: async (room: string) => {
     try {
       await deleteRoom(API_BASE, room, gmKey ?? '')
-      // 服务器上的房间没了，本机缓存里的这条也一并清掉
-      forgetRoom(API_BASE, room)
-      roomName = ''
-      roomJoinPwd = ''
-      gmKey = null
-      gmAuthed = false
-      localStorage.removeItem(ROOM_STORAGE)
-      localStorage.removeItem(ROOM_JOIN_STORAGE)
-      localStorage.removeItem(ROOM_GM_STORAGE)
-      store.replaceState(createEmptyState())
-      const params = new URLSearchParams(location.search)
-      params.delete('room')
-      const qs = params.toString()
-      history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
-      rerender()
-      syncPolling()
-      showToast(`房间「${room}」已删除`)
-      return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
+    // 服务器上的房间没了，本机缓存里的这条也一并清掉
+    forgetRoom(API_BASE, room)
+    await leaveRoom()
+    rerender()
+    syncPolling()
+    showToast(`房间「${room}」已删除`)
+    return { ok: true as const }
+  },
+  /** 退出房间回到默认房间（服务器上的房间保留；未同步改动会丢，先确认） */
+  onLeaveRoom: async () => {
+    if (dirty && !confirm('本地有尚未同步到服务器的改动，退出房间将丢弃这些改动。继续？')) {
+      return { ok: false as const, error: '已取消' }
+    }
+    await leaveRoom()
+    dirty = false
+    rerender()
+    syncPolling()
+    return { ok: true as const }
   },
 }
 
@@ -364,6 +364,42 @@ function enterRoom(room: string, joinPwd: string): void {
   if (API_BASE) params.set('server', API_BASE)
   params.set('room', room)
   history.replaceState(null, '', `${location.pathname}?${params.toString()}`)
+}
+
+/**
+ * 退出当前房间、回到默认房间（与 enterRoom 对偶）。
+ * 加入房间是「pull 房间状态覆盖本地」，退出就是「pull 默认房间状态覆盖本地」——
+ * 对称才不会留下半房间半默认的混合状态。
+ *
+ * 写凭证也要换手：房间的 GM 密码与默认房间的 GM_KEY（server 环境变量）不是一把锁，
+ * 退出后得重新拿后者去验一遍，验不过就老实退回只读。
+ * 拉不到默认房间时给空状态而不是卡住——退出不该被网络问题挡住。
+ */
+async function leaveRoom(): Promise<void> {
+  roomName = ''
+  roomJoinPwd = ''
+  localStorage.removeItem(ROOM_STORAGE)
+  localStorage.removeItem(ROOM_JOIN_STORAGE)
+  localStorage.removeItem(ROOM_GM_STORAGE)
+  const params = new URLSearchParams(location.search)
+  params.delete('room')
+  const qs = params.toString()
+  history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
+
+  gmKey = localStorage.getItem(GM_KEY_STORAGE)
+  try {
+    store.replaceState(await pullCurrent())
+    gmAuthed = gmKey ? await checkGmKey(gmKey) : false
+    if (gmKey && !gmAuthed) {
+      gmKey = null
+      dropGmKey()
+    }
+  } catch {
+    store.replaceState(createEmptyState())
+    gmAuthed = false
+    gmKey = null
+    showToast('无法连接服务器，已回到空的默认房间')
+  }
 }
 
 /** 拉取当前上下文状态（房间模式用加入密码拉取，否则默认房间） */
