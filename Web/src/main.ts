@@ -313,7 +313,9 @@ function showToast(msg: string): void {
 
 // 变更防抖推送到 server（单写者全量覆盖；失败静默，下次变更重试）
 let pushTimer: number | undefined
-store.subscribe(() => {
+store.subscribe((kind) => {
+  // 显示顺序是本机的视图偏好，不是契约数据，不参与同步
+  if (kind === 'order') return
   if (urlReadonly || !gmAuthed) return
   dirty = true
   window.clearTimeout(pushTimer)

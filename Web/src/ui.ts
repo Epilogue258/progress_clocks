@@ -3,6 +3,7 @@ import { CLOCK_MAX_SEGMENTS, CLOCK_MIN_SEGMENTS, clampInt } from '../../common/t
 import { PALETTE, Store } from './state'
 import { svgClock } from './clock-svg'
 import { exportStateAsPng } from './export'
+import { bindDragHandle } from './drag-sort'
 
 export type ViewMode = 'grid' | 'list'
 
@@ -315,11 +316,19 @@ function settingsGear(clock: ProgressClock, ui: UiState, rerender: Rerender): HT
   return gear
 }
 
+/** 拖动把手：仅非只读模式出现，用来调整显示顺序（顺序存本地，不同步） */
+function dragHandle(): HTMLElement {
+  const handle = el('div', 'drag-handle', '⠿')
+  handle.title = '拖动调整顺序'
+  handle.setAttribute('aria-label', '拖动调整顺序')
+  return handle
+}
+
 // ---------- 卡片网格 ----------
 
 function clockCard(clock: ProgressClock): HTMLElement {
   const card = el('div', 'clock-card')
-  card.dataset.id = clock.id
+  card.dataset.clockId = clock.id
   card.insertAdjacentHTML('beforeend', svgClock({ max: clock.max, fill: clock.fill, color: clock.color ?? '#888888' }))
   card.append(el('div', 'clock-count', `${clock.fill}/${clock.max}`))
   card.append(el('div', 'clock-name', clock.name || '未命名'))
@@ -333,10 +342,17 @@ function renderGrid(
   rerender: Rerender,
 ): HTMLElement {
   const grid = el('div', 'clocks-grid')
-  for (const clock of Object.values(store.state.clocks)) {
+  const onReorder = (id: string, toIndex: number) => {
+    store.reorderClock(id, toIndex)
+    rerender()
+  }
+  for (const clock of store.visibleClocks) {
     const card = clockCard(clock)
     if (clock.id === store.currentClockId) card.classList.add('current')
     if (!readonly) {
+      const handle = dragHandle()
+      card.append(handle)
+      bindDragHandle(handle, card, clock.id, { container: grid, onReorder })
       card.append(settingsGear(clock, ui, rerender))
       bindClockInteractions(card, clock.id, store, ui, rerender)
     }
@@ -354,12 +370,20 @@ function renderList(
   rerender: Rerender,
 ): HTMLElement {
   const list = el('div', 'clock-list')
-  for (const clock of Object.values(store.state.clocks)) {
+  const onReorder = (id: string, toIndex: number) => {
+    store.reorderClock(id, toIndex)
+    rerender()
+  }
+  for (const clock of store.visibleClocks) {
     const row = el('div', 'clock-row')
-    row.dataset.id = clock.id
+    row.dataset.clockId = clock.id
     if (clock.id === store.currentClockId) row.classList.add('current')
 
     if (!readonly) {
+      const handle = dragHandle()
+      row.append(handle)
+      bindDragHandle(handle, row, clock.id, { container: list, onReorder })
+
       const minus = el('button', 'row-btn', '−') as HTMLButtonElement
       minus.setAttribute('aria-label', `减少 ${clock.name}`)
       minus.addEventListener('pointerdown', preventLongPress)

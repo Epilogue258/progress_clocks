@@ -283,6 +283,70 @@ body {
   font-size: 16px;
 }
 
+/* ---------- 拖动排序（本地顺序，不同步） ---------- */
+
+/* 指示线是绝对定位的，容器提供定位基准 */
+.clocks-grid,
+.clock-list {
+  position: relative;
+}
+
+.drag-handle {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none; /* 关键：从把手起手的拖动不会被浏览器当成滚动 */
+  display: grid;
+  place-items: center;
+  user-select: none;
+}
+
+.drag-handle:hover {
+  background: var(--track);
+  color: var(--text);
+}
+
+/* 网格卡片里钉在左上角，与右上角的齿轮对称 */
+.clock-card .drag-handle {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+
+.drag-marker {
+  position: absolute;
+  z-index: 5;
+  background: var(--text);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.clock-card.dragging,
+.clock-row.dragging {
+  position: relative;
+  z-index: 6;
+  opacity: 0.9;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--text);
+  cursor: grabbing;
+}
+
+/* 拖动中 hover 不再变底色，免得跟选中态打架 */
+.clock-card.dragging:hover,
+.clock-row.dragging:hover {
+  background: var(--card);
+}
+
+body.drag-active {
+  user-select: none;
+  cursor: grabbing;
+}
+
 /* ---------- 格数快速选择（4/6/8） ---------- */
 
 .max-picker {
@@ -504,6 +568,13 @@ body {
   .clock-list {
     padding: 12px;
     gap: 8px;
+  }
+
+  /* 手机行内按钮多（把手/−/+/齿轮），把手收窄给钟名让位 */
+  .drag-handle {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
   }
 
   /* FAB：手机右下角新建 */

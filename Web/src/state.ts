@@ -8,9 +8,17 @@ import {
   createEmptyState,
   parseState,
 } from '../../common/types'
+import { loadOrder, moveItem, normalizeOrder, saveOrder, sortByOrder } from './clock-order'
 
 const STORAGE_KEY = 'progress-clocks:state'
 const UNDO_LIMIT = 100
+
+/**
+ * 变更类型。
+ * - data：契约数据变了，需要同步到服务器
+ * - order：仅本地显示顺序变了，不推送（顺序是本机的视图偏好）
+ */
+export type ChangeKind = 'data' | 'order'
 
 /** 粗野风格色板：按创建顺序分配，可在设置面板修改 */
 export const PALETTE = [
@@ -40,18 +48,38 @@ export class Store {
    */
   private syncedVersion: number
 
+  /** 本地显示顺序（钟 id 的排列），仅本机有效，不参与同步 */
+  order: string[]
+
   private undoStack: ClockState[] = []
   private redoStack: ClockState[] = []
-  private listeners = new Set<() => void>()
+  private listeners = new Set<(kind: ChangeKind) => void>()
 
   constructor() {
     this.state = load()
     this.syncedVersion = this.state.version
+    this.order = normalizeOrder(Object.keys(this.state.clocks), loadOrder())
     // 给旧数据补默认颜色（按创建顺序）
     let i = 0
     for (const clock of Object.values(this.state.clocks)) {
       if (!clock.color) clock.color = PALETTE[i++ % PALETTE.length]
     }
+  }
+
+  /** 按本地顺序排列的钟（渲染用） */
+  get visibleClocks(): ProgressClock[] {
+    return sortByOrder(Object.values(this.state.clocks), this.order)
+  }
+
+  /**
+   * 拖动排序：把 fromId 移到第 toIndex 位。
+   * 只改本地顺序——不进撤销栈（排序不是数据变更），也不触发同步。
+   */
+  reorderClock(fromId: string, toIndex: number): void {
+    const ids = this.visibleClocks.map((c) => c.id)
+    this.order = normalizeOrder(ids, moveItem(ids, fromId, toIndex))
+    saveOrder(this.order)
+    this.notify('order')
   }
 
   /** 推送用的状态快照：version 恒为同步基线（避免撤销等携带旧版本） */
@@ -73,17 +101,19 @@ export class Store {
     this.undoStack = []
     this.redoStack = []
     this.currentClockId = null
+    // 服务器数据可能增删了钟：顺手把顺序里的失效 id 剔掉、新 id 补到末尾
+    this.order = normalizeOrder(Object.keys(this.state.clocks), this.order)
     this.persist()
     this.notify()
   }
 
-  subscribe(fn: () => void): () => void {
+  subscribe(fn: (kind: ChangeKind) => void): () => void {
     this.listeners.add(fn)
     return () => this.listeners.delete(fn)
   }
 
-  private notify() {
-    for (const fn of this.listeners) fn()
+  private notify(kind: ChangeKind = 'data') {
+    for (const fn of this.listeners) fn(kind)
   }
 
   /**
