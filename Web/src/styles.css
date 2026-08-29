@@ -532,7 +532,6 @@ body.drag-active {
 .text-input,
 .modal input:not([type='range']):not([type='color']):not([type='checkbox']):not([type='radio']):not([type='file']) {
   appearance: none;
-  width: 100%;
   border: none;
   outline: none;
   background: var(--field-bg);
@@ -543,6 +542,17 @@ body.drag-active {
   padding: 12px 14px;
   border-radius: 12px;
   transition: box-shadow 0.2s;
+  /* flex 项的 min-width 默认 auto，会拿 input 的固有宽度（约 170px）当下限，
+     在 fill-row / color-custom 这类 flex 行里足以把弹窗撑爆 */
+  min-width: 0;
+}
+
+/* width 只写在 .text-input 上，不放进上面那条规则：
+   .modal input:not(...) 的选择器特异性高达 (0,6,1)，
+   会把 .fill-input 这类单类覆盖项 (0,1,0) 的 width 打穿——
+   之前 width:100% 写在里面，78px 的填充框直接被撑成一整行还不允许收缩。 */
+.text-input {
+  width: 100%;
 }
 
 .text-input::placeholder,
@@ -565,6 +575,7 @@ body.drag-active {
 
 .fill-row input[type='range'] {
   flex: 1;
+  min-width: 0; /* 允许收缩，否则滑块自身固有宽度会把数字框挤出去 */
   accent-color: var(--accent);
 }
 
