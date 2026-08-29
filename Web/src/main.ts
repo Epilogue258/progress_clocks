@@ -14,9 +14,23 @@ import { Store } from './state'
 import { applyTheme, render, type GmContext, type UiState } from './ui'
 import { ApiError, fetchState, pollState, saveState, verifyKey } from './api'
 
-// server 地址：默认同源（Web 由 server 静态托管）。
-// 独立部署 / 本地联调时改为完整地址，如 'http://192.168.1.10:2333'
-const API_BASE = ''
+// server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
+// 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
+// 通过 ?server=http://ip:2333 或 GM 弹窗填服务器地址连接任意后端；同源托管时留空
+const API_BASE_STORAGE = 'pc-api-base'
+
+function normalizeBase(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+function resolveApiBase(): string {
+  const fromUrl = new URLSearchParams(location.search).get('server')
+  if (fromUrl) return normalizeBase(fromUrl)
+  const saved = localStorage.getItem(API_BASE_STORAGE)
+  return saved ? normalizeBase(saved) : ''
+}
+
+let API_BASE = resolveApiBase()
 
 const GM_KEY_STORAGE = 'pc-gm-key'
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
@@ -40,6 +54,8 @@ const ui: UiState = { view: 'grid', settingsClockId: null, creating: false, gmDi
 
 let gmKey: string | null = localStorage.getItem(GM_KEY_STORAGE)
 let gmAuthed = false
+/** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
+let dirty = false
 
 // 启动时验证本地已存的密钥是否仍有效
 if (!urlReadonly && gmKey) {
@@ -74,6 +90,36 @@ const gm: GmContext = {
     localStorage.removeItem(GM_KEY_STORAGE)
     rerender()
   },
+  /** 当前生效的服务器地址（'' = 同源） */
+  get serverBase() {
+    return API_BASE
+  },
+  /** 保存并切换服务器：更新配置、重拉新 server 状态、重新验证 GM 密钥 */
+  onServerChange: async (base: string) => {
+    const next = normalizeBase(base)
+    if (dirty && !confirm('本地有尚未同步到服务器的改动，切换服务器将丢弃这些改动。继续？')) {
+      return false
+    }
+    API_BASE = next
+    localStorage.setItem(API_BASE_STORAGE, next)
+    try {
+      const remote = await fetchState(API_BASE)
+      store.replaceState(remote)
+    } catch {
+      // 连接失败：配置已保存，本地数据保持可用（离线兜底），下次刷新重试
+      showToast('无法连接服务器，已保持本地数据')
+    }
+    if (gmKey) {
+      const ok = await verifyKey(API_BASE, gmKey)
+      gmAuthed = ok
+      if (!ok) {
+        gmKey = null
+        localStorage.removeItem(GM_KEY_STORAGE)
+      }
+    }
+    rerender()
+    return true
+  },
 }
 
 const rerender = () =>
@@ -95,12 +141,14 @@ function showToast(msg: string): void {
 let pushTimer: number | undefined
 store.subscribe(() => {
   if (urlReadonly || !gmAuthed) return
+  dirty = true
   window.clearTimeout(pushTimer)
   pushTimer = window.setTimeout(async () => {
     try {
       const version = await saveState(API_BASE, store.syncState, gmKey ?? undefined)
       // 推送成功：更新同步基线，避免下次操作（含撤销）携带旧版本触发假冲突
       store.markSynced(version)
+      dirty = false
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）

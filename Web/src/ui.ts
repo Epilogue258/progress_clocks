@@ -26,6 +26,10 @@ export interface GmContext {
   onSubmitKey: (key: string) => Promise<boolean>
   /** 清除登录态 */
   onLogout: () => void
+  /** 当前生效的服务器地址（'' = 同源） */
+  serverBase: string
+  /** 保存并切换服务器（main 侧连接新 server、重拉状态、重新验证密钥） */
+  onServerChange: (base: string) => Promise<boolean>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -540,7 +544,36 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
   }
   actions.append(submit)
 
-  modal.append(hint, input, actions)
+  // 服务器连接（分离模式）：Web 可指向任意后端；留空 = 同源托管
+  const serverInput = document.createElement('input')
+  serverInput.type = 'text'
+  serverInput.placeholder = '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）'
+  serverInput.value = gm.serverBase
+  serverInput.autocomplete = 'off'
+
+  const serverActions = el('div', 'modal-actions')
+  const saveServer = el('button', 'tbtn', '保存并连接')
+  saveServer.addEventListener('click', async () => {
+    const base = serverInput.value.trim()
+    if (base === gm.serverBase) {
+      close()
+      return
+    }
+    hint.textContent = '连接中…'
+    const done = await gm.onServerChange(base)
+    hint.textContent = ''
+    if (done) {
+      close()
+    } else {
+      hint.textContent = '已取消，保持当前服务器'
+    }
+  })
+  serverInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveServer.click()
+  })
+  serverActions.append(saveServer)
+
+  modal.append(hint, input, actions, serverInput, serverActions)
   input.focus()
   return backdrop
 }
