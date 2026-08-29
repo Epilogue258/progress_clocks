@@ -347,15 +347,18 @@ store.subscribe(() => {
   }, 500)
 })
 
-// 启动：拉取 server 状态（server 为权威；失败保持本地数据，离线可用）
-pullCurrent()
-  .then((remote) => {
+// 启动：拉取 server 状态（server 为权威；失败保持本地数据并定时重试，server 重启后自动恢复）
+async function bootstrapPull(): Promise<void> {
+  try {
+    const remote = await pullCurrent()
     store.replaceState(remote)
     rerender()
-  })
-  .catch(() => {
-    // 离线模式，仅本地 localStorage
-  })
+  } catch {
+    // 离线 / server 刚重启：5s 后重试；成功前本地数据可用
+    setTimeout(() => void bootstrapPull(), 5000)
+  }
+}
+void bootstrapPull()
 
 // 玩家只读模式：轮询 server（GM 端不轮询，靠推送）
 if (urlReadonly) {
