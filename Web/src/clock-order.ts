@@ -46,15 +46,17 @@ export function normalizeOrder(visibleIds: string[], order: string[]): string[] 
 }
 
 /**
- * 按 order 排序。未出现在 order 里的（如刚从别处同步过来的新钟）排到末尾，
- * 彼此之间按 id 升序——id 以时间戳开头，因此等价于「按创建先后」。
+ * 按 order 排序。未出现在 order 里的（如刚从别处同步过来的新钟）排到末尾。
+ *
+ * 两者都不在 order 里时比较结果为 0，靠 Array.sort 的稳定性保持传入顺序——
+ * 也就是 state.clocks 的插入顺序。这比「按 id 字符串排序」更贴近创建先后：
+ * id 是「时间戳 + 随机后缀」，同一毫秒内创建的钟按 id 排出来的顺序是随机的。
  */
 export function sortByOrder<T extends { id: string }>(items: T[], order: string[]): T[] {
   const rank = new Map(order.map((id, i) => [id, i]))
   return [...items].sort((a, b) => {
     const ra = rank.get(a.id) ?? Number.MAX_SAFE_INTEGER
     const rb = rank.get(b.id) ?? Number.MAX_SAFE_INTEGER
-    if (ra !== rb) return ra - rb
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    return ra - rb
   })
 }

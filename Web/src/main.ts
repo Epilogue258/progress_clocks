@@ -78,6 +78,8 @@ const ui: UiState = {
   roomDialog: false,
   roomPrefill: '',
   sidebarOpen: false,
+  moreMenuOpen: false,
+  shortcuts: false,
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -436,26 +438,86 @@ window.addEventListener('keydown', (e) => {
     return
   }
 
+  // Esc 逐层关最上层的浮层。放在权限判断之前——只读玩家也要能关弹窗
+  if (e.key === 'Escape') {
+    if (ui.moreMenuOpen) ui.moreMenuOpen = false
+    else if (ui.shortcuts) ui.shortcuts = false
+    else if (ui.roomDialog) ui.roomDialog = false
+    else if (ui.creating) ui.creating = false
+    else if (ui.gmDialog) ui.gmDialog = false
+    else if (ui.settingsClockId) ui.settingsClockId = null
+    else return
+    rerender()
+    return
+  }
+
+  // ? 查看快捷键（任何模式可用）
+  if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+    e.preventDefault()
+    ui.shortcuts = !ui.shortcuts
+    rerender()
+    return
+  }
+
+  // 以下都是写操作：只读模式或未登录 GM 时不响应
   if (urlReadonly || !gmAuthed) return
 
-  if (e.key === 'Escape') {
-    if (ui.roomDialog) {
-      ui.roomDialog = false
-      rerender()
-    } else if (ui.creating) {
-      ui.creating = false
-      rerender()
-    } else if (ui.gmDialog) {
-      ui.gmDialog = false
-      rerender()
-    } else if (ui.settingsClockId) {
-      ui.settingsClockId = null
-      rerender()
-    }
-  } else if (e.key >= '1' && e.key <= '3' && store.currentClockId) {
-    // 数字键：对最近交互的钟批量填充
-    store.increment(store.currentClockId, Number(e.key))
-    rerender()
+  switch (e.key) {
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      e.preventDefault()
+      if (store.moveCurrent(-1)) rerender()
+      break
+    case 'ArrowRight':
+    case 'ArrowDown':
+      e.preventDefault()
+      if (store.moveCurrent(1)) rerender()
+      break
+    case 'Enter':
+      if (store.currentClockId && !ui.settingsClockId) {
+        e.preventDefault()
+        ui.settingsClockId = store.currentClockId
+        rerender()
+      }
+      break
+    case 'Delete':
+      // 有撤销栈兜底，不必弹确认；Backspace 不绑，误触风险太高
+      if (store.currentClockId) {
+        e.preventDefault()
+        store.deleteClock(store.currentClockId)
+        rerender()
+      }
+      break
+    case '0':
+      if (store.currentClockId) {
+        e.preventDefault()
+        store.updateClock(store.currentClockId, { fill: 0 })
+        rerender()
+      }
+      break
+    case '+':
+    case '=':
+      if (store.currentClockId) {
+        e.preventDefault()
+        store.increment(store.currentClockId, 1)
+        rerender()
+      }
+      break
+    case '-':
+    case '_':
+      if (store.currentClockId) {
+        e.preventDefault()
+        store.increment(store.currentClockId, -1)
+        rerender()
+      }
+      break
+    default:
+      if (e.key >= '1' && e.key <= '3' && store.currentClockId) {
+        // 数字键：对当前钟增量填充 1~3 格
+        e.preventDefault()
+        store.increment(store.currentClockId, Number(e.key))
+        rerender()
+      }
   }
 })
 

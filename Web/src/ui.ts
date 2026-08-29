@@ -20,6 +20,10 @@ export interface UiState {
   roomPrefill: string
   /** 侧边栏展开开关（汉堡菜单） */
   sidebarOpen: boolean
+  /** 顶栏「更多」菜单展开（低频操作收在这里，顶栏才不会挤成一排） */
+  moreMenuOpen: boolean
+  /** 快捷键说明弹窗 */
+  shortcuts: boolean
 }
 
 export type Rerender = () => void
@@ -121,6 +125,12 @@ export function render(
     const clock = store.state.clocks[ui.settingsClockId]
     if (clock) root.append(renderSettings(clock, store, ui, rerender))
   }
+  if (ui.moreMenuOpen) {
+    root.append(renderMoreMenu(store, ui, readonly, rerender, gm))
+  }
+  if (ui.shortcuts) {
+    root.append(renderShortcutsModal(ui, rerender))
+  }
 }
 
 // ---------- 工具 ----------
@@ -207,71 +217,171 @@ function renderTopbar(
   bar.append(el('span', 'title', '进度钟'))
 
   // 房间连接入口（所有模式可见：GM 建房间 / 玩家加入）
-  const roomBtn = el('button', 'tbtn', gm.roomName ? `房间 ${gm.roomName}` : '连接')
-  roomBtn.title = '连接服务器房间（加入 / 新建）'
+  const roomBtn = el('button', 'tbtn room-btn', gm.roomName || '连接')
+  roomBtn.title = gm.roomName
+    ? `房间：${gm.roomName}（点击切换 / 新建）`
+    : '连接服务器房间（加入 / 新建）'
   roomBtn.addEventListener('click', () => {
     ui.roomDialog = true
     rerender()
   })
   bar.append(roomBtn)
 
-  // GM 登录状态（玩家只读模式下隐藏入口）
-  if (!gm.urlReadonly) {
-    const gmBtn = el('button', 'tbtn', gm.authed ? 'GM ✓' : 'GM 登录')
-    gmBtn.title = gm.authed ? '点击管理 GM 登录' : '输入 GM 密钥获得编辑权限'
-    gmBtn.addEventListener('click', () => {
-      ui.gmDialog = true
-      rerender()
-    })
-    bar.append(gmBtn)
-  }
-
   const viewBtn = el('button', 'tbtn', ui.view === 'grid' ? '☷ 网格' : '≡ 列表')
+  viewBtn.title = '切换网格 / 列表视图'
   viewBtn.addEventListener('click', () => {
     ui.view = ui.view === 'grid' ? 'list' : 'grid'
     rerender()
   })
   bar.append(viewBtn)
 
-  const themeBtn = el('button', 'tbtn', applyTheme() === 'dark' ? '深色' : '浅色')
-  themeBtn.title = '切换深浅模式'
-  themeBtn.addEventListener('click', () => {
-    themeBtn.textContent = toggleTheme() === 'dark' ? '深色' : '浅色'
-    rerender()
-  })
-  bar.append(themeBtn)
-
+  // 高频操作留在顶栏：撤销是 GM 改错后的第一反应，不该藏进菜单
   if (!readonly) {
-    const exportBtn = el('button', 'tbtn', '⤓ 导出')
-    exportBtn.title = '导出全部进度钟为 PNG'
-    exportBtn.addEventListener('click', () => exportStateAsPng(store.state))
-    bar.append(exportBtn)
-
     const undoBtn = el('button', 'tbtn', '↶ 撤销') as HTMLButtonElement
     undoBtn.disabled = !store.canUndo
+    undoBtn.title = '撤销（Ctrl+Z）'
     undoBtn.addEventListener('click', () => {
       store.undo()
       rerender()
     })
-    bar.append(undoBtn)
 
     const redoBtn = el('button', 'tbtn', '↷ 重做') as HTMLButtonElement
     redoBtn.disabled = !store.canRedo
+    redoBtn.title = '重做（Ctrl+Y）'
     redoBtn.addEventListener('click', () => {
       store.redo()
       rerender()
     })
-    bar.append(redoBtn)
 
     const newBtn = el('button', 'tbtn primary', '＋ 新建')
+    newBtn.title = '新建进度钟（Ctrl+N）'
     newBtn.addEventListener('click', () => {
       ui.creating = true
       rerender()
     })
-    bar.append(newBtn)
+    bar.append(undoBtn, redoBtn, newBtn)
   }
 
+  // 低频操作收进「更多」，顶栏才不至于挤成一排（手机端尤其明显）
+  const moreBtn = el('button', 'tbtn more-btn', '⋯')
+  moreBtn.title = '更多'
+  moreBtn.setAttribute('aria-label', '更多操作')
+  moreBtn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    ui.moreMenuOpen = !ui.moreMenuOpen
+    rerender()
+  })
+  bar.append(moreBtn)
+
   return bar
+}
+
+// ---------- 顶栏「更多」菜单 ----------
+
+function menuItem(
+  label: string,
+  onSelect: () => void,
+  className = '',
+): HTMLButtonElement {
+  const item = el('button', `menu-item ${className}`.trim(), label) as HTMLButtonElement
+  item.addEventListener('click', (e) => {
+    e.stopPropagation()
+    onSelect()
+  })
+  return item
+}
+
+function renderMoreMenu(
+  store: Store,
+  ui: UiState,
+  readonly: boolean,
+  rerender: Rerender,
+  gm: GmContext,
+): HTMLElement {
+  // 透明全屏层：点菜单以外的任何地方即关闭
+  const backdrop = el('div', 'menu-backdrop')
+  backdrop.addEventListener('click', () => {
+    ui.moreMenuOpen = false
+    rerender()
+  })
+
+  const menu = el('div', 'more-menu')
+
+  if (!gm.urlReadonly) {
+    menu.append(
+      menuItem(gm.authed ? 'GM 管理' : 'GM 登录', () => {
+        ui.moreMenuOpen = false
+        ui.gmDialog = true
+        rerender()
+      }),
+    )
+  }
+
+  if (!readonly) {
+    menu.append(
+      menuItem('导出 PNG', () => {
+        ui.moreMenuOpen = false
+        exportStateAsPng(store.state)
+        rerender()
+      }),
+    )
+  }
+
+  menu.append(
+    menuItem(applyTheme() === 'dark' ? '切换为浅色' : '切换为深色', () => {
+      toggleTheme()
+      ui.moreMenuOpen = false
+      rerender()
+    }),
+  )
+
+  menu.append(
+    menuItem('快捷键说明', () => {
+      ui.moreMenuOpen = false
+      ui.shortcuts = true
+      rerender()
+    }),
+  )
+
+  backdrop.append(menu)
+  return backdrop
+}
+
+// ---------- 快捷键说明 ----------
+
+const SHORTCUTS: [string, string][] = [
+  ['点击钟面', '填充 +1'],
+  ['1 / 2 / 3', '给当前钟填充 1~3 格'],
+  ['+ / -', '当前钟 +1 / -1'],
+  ['0', '当前钟清零'],
+  ['← / →', '切换当前钟'],
+  ['Enter', '打开当前钟设置'],
+  ['Delete', '删除当前钟（可撤销）'],
+  ['Ctrl + N', '新建进度钟'],
+  ['Ctrl + Z', '撤销'],
+  ['Ctrl + Y', '重做（也支持 Ctrl+Shift+Z）'],
+  ['Esc', '关闭弹窗'],
+  ['?', '显示本说明'],
+  ['长按 / 右键钟面', '打开设置'],
+  ['拖动 ⠿ 把手', '调整显示顺序'],
+]
+
+function renderShortcutsModal(ui: UiState, rerender: Rerender): HTMLElement {
+  const { backdrop, modal, close } = modalShell('快捷键', () => {
+    ui.shortcuts = false
+    rerender()
+  })
+  for (const [key, desc] of SHORTCUTS) {
+    const row = el('div', 'shortcut-row')
+    row.append(el('kbd', 'shortcut-key', key), el('span', 'shortcut-desc', desc))
+    modal.append(row)
+  }
+  const actions = el('div', 'modal-actions')
+  const done = el('button', 'tbtn primary', '知道了') as HTMLButtonElement
+  done.addEventListener('click', close)
+  actions.append(done)
+  modal.append(actions)
+  return backdrop
 }
 
 // ---------- 钟交互（点击 +1 / 长按、右键设置） ----------

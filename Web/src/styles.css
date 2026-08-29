@@ -119,6 +119,85 @@ body {
   color: var(--danger);
 }
 
+/* 房间名可能很长，限宽截断，别把顶栏撑爆 */
+.room-btn {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.more-btn {
+  min-width: 44px;
+  padding: 10px 14px;
+}
+
+/* ---------- 顶栏「更多」菜单 ---------- */
+
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+
+.more-menu {
+  position: absolute;
+  top: 60px;
+  right: 12px;
+  min-width: 190px;
+  background: var(--card);
+  border: 1px solid var(--track);
+  border-radius: 14px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.menu-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  padding: 11px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.menu-item:hover {
+  background: var(--field-bg);
+}
+
+/* ---------- 快捷键说明 ---------- */
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.shortcut-key {
+  flex: none;
+  min-width: 104px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--field-bg);
+  color: var(--text);
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.shortcut-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
 /* ---------- 卡片网格 ---------- */
 
 .clocks-grid {

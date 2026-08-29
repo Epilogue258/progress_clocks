@@ -82,6 +82,22 @@ export class Store {
     this.notify('order')
   }
 
+  /**
+   * 把「当前钟」切到相邻的一个（按显示顺序，首尾相接）。
+   * 只改选中态，不碰数据——所以不进撤销栈、不通知，由调用方 rerender。
+   */
+  moveCurrent(delta: number): boolean {
+    const ids = this.visibleClocks.map((c) => c.id)
+    if (ids.length === 0) return false
+    const at = this.currentClockId ? ids.indexOf(this.currentClockId) : -1
+    if (at === -1) {
+      this.currentClockId = delta > 0 ? ids[0] : ids[ids.length - 1]
+    } else {
+      this.currentClockId = ids[(at + delta + ids.length) % ids.length]
+    }
+    return true
+  }
+
   /** 推送用的状态快照：version 恒为同步基线（避免撤销等携带旧版本） */
   get syncState(): ClockState {
     return { ...this.state, version: this.syncedVersion }
@@ -192,9 +208,15 @@ export class Store {
 
   deleteClock(id: string): void {
     if (!this.state.clocks[id]) return
+    // 删除后把选中态落到相邻的一个，而不是清空：
+    // 连续按 Delete、或删完继续用方向键时，焦点不会莫名其妙丢掉。
+    // 取值必须在 mutate 之前——那时钟还没被移除。
+    const ids = this.visibleClocks.map((c) => c.id)
+    const at = ids.indexOf(id)
+    const fallback = ids[at + 1] ?? ids[at - 1] ?? null
     this.mutate(() => {
       delete this.state.clocks[id]
-      if (this.currentClockId === id) this.currentClockId = null
+      if (this.currentClockId === id) this.currentClockId = fallback
     })
   }
 
