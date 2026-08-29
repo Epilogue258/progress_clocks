@@ -116,22 +116,34 @@ function json(res: ServerResponse, code: number, data: unknown): void {
   res.end(JSON.stringify(data))
 }
 
+/** 请求体超限。单独一个类型，好和内部错误区分开——回 413 而不是 500 */
+class BodyTooLargeError extends Error {}
+
 /** 读取请求体（限制大小，防滥用） */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
+    let settled = false
+    // data/end/error 可能重复触发，兜底只兑现一次
+    const settle = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      fn()
+    }
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > MAX_BODY) {
-        reject(new Error('请求体过大'))
-        req.destroy()
+        // 超限就停止读取，但别 destroy——连接一断客户端只能看到 ECONNRESET，
+        // 拿不到「请求体过大」这个明确原因（QQ Bot 之类只能干瞪眼）
+        req.pause()
+        settle(() => reject(new BodyTooLargeError('请求体过大')))
         return
       }
       chunks.push(chunk)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')))
-    req.on('error', reject)
+    req.on('end', () => settle(() => resolve(Buffer.concat(chunks).toString('utf-8'))))
+    req.on('error', (err) => settle(() => reject(err)))
   })
 }
 
@@ -318,6 +330,10 @@ const server = createServer(async (req, res) => {
     // 其余路径：静态托管
     await serveStatic(res, url.pathname)
   } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      json(res, 413, { ok: false, error: `请求体过大（上限 ${MAX_BODY / 1024 / 1024}MB）` })
+      return
+    }
     console.error('[server] 处理请求出错:', err)
     json(res, 500, { ok: false, error: '服务器内部错误' })
   }
