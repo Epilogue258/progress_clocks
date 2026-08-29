@@ -82,6 +82,7 @@ const ui: UiState = {
   moreMenuOpen: false,
   shortcuts: false,
   sidebarQuery: '',
+  gmError: '',
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -92,18 +93,29 @@ let gmAuthed = roomName ? !!gmKey : false
 /** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
 let dirty = false
 
+/** 记住 GM 凭证：房间模式存房间 GM 密码，默认房间存 GM_KEY */
+function persistGmKey(key: string): void {
+  localStorage.setItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE, key)
+}
+
+/** 丢弃 GM 凭证 */
+function dropGmKey(): void {
+  localStorage.removeItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE)
+}
+
+/** 对着当前服务器校验凭证：房间模式验 GM 密码，默认房间验 GM_KEY */
+function checkGmKey(key: string): Promise<boolean> {
+  return roomName ? verifyRoomKey(API_BASE, roomName, key) : verifyKey(API_BASE, key)
+}
+
 // 启动时验证本地已存的密钥是否仍有效
 if (!urlReadonly && gmKey) {
-  const okPromise = roomName ? verifyRoomKey(API_BASE, roomName, gmKey) : verifyKey(API_BASE, gmKey)
+  const okPromise = checkGmKey(gmKey)
   okPromise.then((ok) => {
     gmAuthed = ok
     if (!ok) {
       gmKey = null
-      if (roomName) {
-        localStorage.removeItem(ROOM_GM_STORAGE)
-      } else {
-        localStorage.removeItem(GM_KEY_STORAGE)
-      }
+      dropGmKey()
     }
     rerender()
     syncPolling()
@@ -123,69 +135,73 @@ const gm: GmContext = {
   get roomJoinPwd() {
     return roomJoinPwd
   },
-  onSubmitKey: async (key) => {
-    // 房间模式：验证 GM 密码（写权限）；默认房间：GM_KEY
-    const ok = roomName
-      ? await verifyRoomKey(API_BASE, roomName, key)
-      : await verifyKey(API_BASE, key)
-    if (ok) {
-      gmKey = key
-      gmAuthed = true
-      if (roomName) {
-        localStorage.setItem(ROOM_GM_STORAGE, key)
-      } else {
-        localStorage.setItem(GM_KEY_STORAGE, key)
-      }
-      rerender()
-      syncPolling()
+  /**
+   * 一次应用「服务器地址 + 凭证」。
+   * 刻意不在这里 rerender：连接是异步的，中途重渲染会把用户正在填的弹窗整个换掉，
+   * 等 await 回来时手上的节点已经是孤儿，错误提示写了也看不见。
+   * 统一由调用方在结束后 rerender，提示文案走 ui.gmError 跟着状态一起重画。
+   */
+  onConnect: async (base, key) => {
+    const next = normalizeBase(base)
+    const serverChanged = next !== API_BASE
+
+    // 换服务器会丢掉本地尚未同步的改动，先确认
+    if (
+      serverChanged &&
+      dirty &&
+      !confirm('本地有尚未同步到服务器的改动，切换服务器将丢弃这些改动。继续？')
+    ) {
+      return { ok: false, cancelled: true }
     }
-    return ok
+
+    if (serverChanged) {
+      API_BASE = next
+      localStorage.setItem(API_BASE_STORAGE, next)
+    }
+
+    // 凭证：填了就验新的；没填但换了服务器，旧凭证要对着新服务器复验一次
+    let error: string | null = null
+    if (key) {
+      if (await checkGmKey(key)) {
+        gmKey = key
+        gmAuthed = true
+        persistGmKey(key)
+      } else {
+        error = roomName ? 'GM 密码无效，请重试' : 'GM 密钥无效，请重试'
+      }
+    } else if (serverChanged && gmKey) {
+      const still = await checkGmKey(gmKey)
+      gmAuthed = still
+      if (!still) {
+        gmKey = null
+        dropGmKey()
+      }
+    }
+
+    // 换了服务器才重拉；拉到就把 dirty 归零——本地已与服务端一致
+    if (serverChanged) {
+      try {
+        store.replaceState(await pullCurrent())
+        dirty = false
+      } catch {
+        // 连接失败：配置已保存，本地数据保持可用（离线兜底），下次刷新重试
+        showToast('无法连接服务器，已保持本地数据')
+      }
+    }
+
+    syncPolling()
+    return error ? { ok: false, error } : { ok: true }
   },
   onLogout: () => {
     gmAuthed = false
     gmKey = null
-    if (roomName) {
-      localStorage.removeItem(ROOM_GM_STORAGE)
-    } else {
-      localStorage.removeItem(GM_KEY_STORAGE)
-    }
+    dropGmKey()
     rerender()
     syncPolling()
   },
   /** 当前生效的服务器地址（'' = 同源） */
   get serverBase() {
     return API_BASE
-  },
-  /** 保存并切换服务器：更新配置、重拉当前上下文状态、重新验证 GM 凭证 */
-  onServerChange: async (base: string) => {
-    const next = normalizeBase(base)
-    if (dirty && !confirm('本地有尚未同步到服务器的改动，切换服务器将丢弃这些改动。继续？')) {
-      return false
-    }
-    API_BASE = next
-    localStorage.setItem(API_BASE_STORAGE, next)
-    try {
-      const remote = await pullCurrent()
-      store.replaceState(remote)
-    } catch {
-      // 连接失败：配置已保存，本地数据保持可用（离线兜底），下次刷新重试
-      showToast('无法连接服务器，已保持本地数据')
-    }
-    if (gmKey) {
-      const ok = roomName ? await verifyRoomKey(API_BASE, roomName, gmKey) : await verifyKey(API_BASE, gmKey)
-      gmAuthed = ok
-      if (!ok) {
-        gmKey = null
-        if (roomName) {
-          localStorage.removeItem(ROOM_GM_STORAGE)
-        } else {
-          localStorage.removeItem(GM_KEY_STORAGE)
-        }
-      }
-    }
-    rerender()
-    syncPolling()
-    return true
   },
   /** 加入房间（GitHub 模型：pull 到本地；gmPwd 可空 = 只读玩家） */
   onJoinRoom: async (server: string, room: string, joinPwd: string, gmPwd: string) => {
@@ -501,8 +517,10 @@ window.addEventListener('keydown', (e) => {
     else if (ui.shortcuts) ui.shortcuts = false
     else if (ui.roomDialog) ui.roomDialog = false
     else if (ui.creating) ui.creating = false
-    else if (ui.gmDialog) ui.gmDialog = false
-    else if (ui.settingsClockId) ui.settingsClockId = null
+    else if (ui.gmDialog) {
+      ui.gmDialog = false
+      ui.gmError = ''
+    } else if (ui.settingsClockId) ui.settingsClockId = null
     else return
     rerender()
     return

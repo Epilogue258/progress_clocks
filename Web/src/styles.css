@@ -526,6 +526,20 @@ body.drag-active {
   margin-top: 6px;
 }
 
+/* 弹窗提示行（连接中 / 凭证无效 / 已取消）。
+   空的时候整行不参与布局，否则 .modal 的 gap 会白留一道空隙 */
+.gm-hint:empty,
+.gm-status:empty {
+  display: none;
+}
+
+.gm-hint,
+.gm-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
 /* 文本类输入框统一外观。
    此前只列出了 text / number，password 掉回浏览器默认样式（白底、不同字号与内边距），
    看着像另一个组件。改成「除滑块/取色器/勾选框外一律适用」，以后新增 type 不会再漏。 */

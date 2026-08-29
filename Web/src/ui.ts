@@ -15,6 +15,13 @@ export interface UiState {
   creating: boolean
   /** GM 登录弹窗开关 */
   gmDialog: boolean
+  /**
+   * GM 弹窗里的提示文案（连接中 / 密钥无效 / 已取消）。
+   * 之所以放进 UiState 而不是直接写 DOM：连接是异步的，
+   * 中途任何一次 rerender 都会重建弹窗、丢掉手写的提示节点——
+   * 提示是状态，就该跟状态一起重渲染。
+   */
+  gmError: string
   /** 房间连接弹窗开关 */
   roomDialog: boolean
   /** 侧边栏点击预填的房间名 */
@@ -34,20 +41,31 @@ export type Rerender = () => void
 /** 房间操作结果 */
 export type RoomResult = { ok: true } | { ok: false; error: string }
 
+/**
+ * 连接结果（服务器地址 + 凭证一次提交）。
+ * cancelled：用户在「切换会丢弃本地改动」的确认框上点了取消，什么都没改
+ * error：可直接展示给用户的失败原因
+ */
+export type ConnectResult = { ok: true } | { ok: false; cancelled?: boolean; error?: string }
+
 /** GM 鉴权上下文（由 main.ts 提供，ui.ts 只负责展示与收集输入） */
 export interface GmContext {
   /** URL 是否强制只读（?readonly 玩家模式：连登录入口都隐藏） */
   urlReadonly: boolean
   /** 当前是否已通过密钥验证 */
   authed: boolean
-  /** 提交密钥验证（main 侧校验并持久化），返回是否成功 */
-  onSubmitKey: (key: string) => Promise<boolean>
+  /**
+   * 一次提交「服务器地址 + 凭证」。
+   * 合起来而不是拆成两个动作：地址与凭证本来就是同一次连接的两半，
+   * 分开提交会多一次重渲染，也会把「换服务器」和「登录」变成两步多余操作。
+   * key 留空 = 不动凭证（只换服务器时用旧凭证对新服务器复验一次）。
+   * 实现侧不重渲染，由调用方在结束后统一 rerender。
+   */
+  onConnect: (base: string, key: string) => Promise<ConnectResult>
   /** 清除登录态 */
   onLogout: () => void
   /** 当前生效的服务器地址（'' = 同源） */
   serverBase: string
-  /** 保存并切换服务器（main 侧连接新 server、重拉状态、重新验证密钥） */
-  onServerChange: (base: string) => Promise<boolean>
   /** 当前房间名（'' = 默认房间） */
   roomName: string
   /** 当前加入密码（'' = 公开房间） */
@@ -321,6 +339,7 @@ function renderMoreMenu(
       menuItem(gm.authed ? 'GM 管理' : 'GM 登录', () => {
         ui.moreMenuOpen = false
         ui.gmDialog = true
+        ui.gmError = ''
         rerender()
       }),
     )
@@ -772,34 +791,61 @@ function renderSettings(
 // ---------- GM 登录弹窗 ----------
 
 function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
-  const { backdrop, modal, close } = modalShell('GM 登录', () => {
+  const { backdrop, modal, close } = modalShell('连接与登录', () => {
     ui.gmDialog = false
+    ui.gmError = ''
     rerender()
   })
 
-  if (gm.authed) {
-    modal.append(el('p', 'gm-status', '当前已以 GM 身份登录'))
-  }
+  const hint = el('div', 'gm-hint', ui.gmError)
 
-  const hint = el('div', 'gm-hint', '')
-  const input = makeInput('password', gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥')
+  // 服务器连接（分离模式）：Web 可指向任意后端；留空 = 同源托管
+  const serverInput = makeInput(
+    'text',
+    '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
+    gm.serverBase,
+  )
+  const credLabel = gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥'
+  const keyInput = makeInput(
+    'password',
+    // 已登录时留空 = 保留当前凭证，只换服务器；重新填 = 换凭证
+    gm.authed ? `${credLabel}，留空 = 保持当前登录` : credLabel,
+  )
 
   const actions = el('div', 'modal-actions')
-  const submit = el('button', 'tbtn primary', gm.authed ? '更换密钥' : '验证并登录')
-  submit.addEventListener('click', async () => {
-    const key = input.value.trim()
-    if (!key) return
-    hint.textContent = '验证中…'
-    const ok = await gm.onSubmitKey(key)
-    if (ok) {
+  const connectBtn = el('button', 'tbtn primary', '连接') as HTMLButtonElement
+
+  // 提交是异步的：await 之后手上这些节点可能已经被别的 rerender 换掉了，
+  // 所以结果一律写回 ui.gmError 再整体重渲染，不直接碰 DOM
+  let busy = false
+  const submit = async (): Promise<void> => {
+    if (busy) return
+    const base = serverInput.value.trim()
+    const key = keyInput.value.trim()
+    // 什么都没改：当作关闭
+    if (base === gm.serverBase && !key) {
       close()
-    } else {
-      hint.textContent = '密钥无效，请重试'
+      return
     }
-  })
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') submit.click()
-  })
+    busy = true
+    connectBtn.disabled = true
+    hint.textContent = '连接中…'
+    const result = await gm.onConnect(base, key)
+    busy = false
+
+    if (result.ok) {
+      close()
+      return
+    }
+    ui.gmError = result.cancelled ? '已取消，保持当前服务器' : result.error ?? '连接失败，请重试'
+    rerender()
+  }
+  connectBtn.addEventListener('click', () => void submit())
+  for (const input of [serverInput, keyInput]) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') void submit()
+    })
+  }
 
   if (gm.authed) {
     const logout = el('button', 'tbtn danger', '清除登录')
@@ -809,39 +855,11 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
     })
     actions.append(logout)
   }
-  actions.append(submit)
+  actions.append(connectBtn)
 
-  // 服务器连接（分离模式）：Web 可指向任意后端；留空 = 同源托管
-  const serverInput = makeInput(
-    'text',
-    '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
-    gm.serverBase,
-  )
-
-  const serverActions = el('div', 'modal-actions')
-  const saveServer = el('button', 'tbtn', '保存并连接')
-  saveServer.addEventListener('click', async () => {
-    const base = serverInput.value.trim()
-    if (base === gm.serverBase) {
-      close()
-      return
-    }
-    hint.textContent = '连接中…'
-    const done = await gm.onServerChange(base)
-    hint.textContent = ''
-    if (done) {
-      close()
-    } else {
-      hint.textContent = '已取消，保持当前服务器'
-    }
-  })
-  serverInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') saveServer.click()
-  })
-  serverActions.append(saveServer)
-
-  modal.append(hint, input, actions, serverInput, serverActions)
-  input.focus()
+  modal.append(hint, serverInput, keyInput, actions)
+  // 焦点落在第一个还空着的框上：分离模式先填服务器，已配好时直接输密钥
+  ;(serverInput.value ? keyInput : serverInput).focus()
   return backdrop
 }
 
