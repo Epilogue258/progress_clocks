@@ -24,6 +24,15 @@
 - [ ] **写鉴权限流**（`TODO-26c7a47f`，server/optional）
   401 失败计数限速，防公网暴力尝试。当前信任网络假设下非必需。
 
+- [ ] **CORS 收紧**（`TODO-bf7146b6`，server/security）
+  现状：`server/src/index.ts` 对所有响应下发 `Access-Control-Allow-Origin: *`，
+  同时 `Access-Control-Allow-Headers` 放行 `Authorization`。
+  局域网 / Tailscale 下无害，但一旦按「云部署」暴露到公网，任意网站的 JS
+  都能带着 GM 密钥读写房间（浏览器不会拦，因为服务端亲口允许了 `*`）。
+  做法：默认改为同源 + 仅放行配置白名单（`ALLOWED_ORIGINS`，分离部署时显式配置），
+  保留 `*` 作为 `--dev` 开关；注意 `file://` 分离模式的 preflight 来源为 `null`，
+  白名单需允许 `null` 或固定走同源。与「云部署」互为前置，可一起做。
+
 ## Done
 
 - [x] **多场景支持**（`TODO-6d8a3ba3`，web/contract）——被房间机制替代实现

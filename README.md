@@ -182,6 +182,7 @@ cd ../server && npm install && npm start
 - [ ] **QQ Bot 示例**：命令解析脚本（`/clock 2/4 名字`、`/clock show`、`/clock list`），调 API 的参考实现
 - [ ] **云部署**：学生云 + `GM_KEY` + 中文字体（`apt install fonts-noto-cjk`，否则导出图中文变方块）+ 可选反向代理
 - [ ] **写鉴权限流**（可选）：401 失败计数限速，防公网暴力尝试
+- [ ] **CORS 收紧**：现状 `Access-Control-Allow-Origin: *` 且放行 `Authorization` 头，公网暴露后任意站点可带密钥读写；改同源 + 白名单（详见 TODO.md）
 
 ## 决策记录
 
