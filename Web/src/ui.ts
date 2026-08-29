@@ -6,6 +6,13 @@ import { exportStateAsPng } from './export'
 import { bindDragHandle } from './drag-sort'
 import type { KnownRoom } from './known-rooms'
 
+/**
+ * 连接弹窗在 `⋯` 菜单里的名字。
+ * 抽成常量是因为房间弹窗的提示要按名字给用户指路——
+ * 两处各写一份字面量的话，改了一边就会指到不存在的菜单项上。
+ */
+export const CONNECT_MENU_LABEL = '连接与登录'
+
 export type ViewMode = 'grid' | 'list'
 
 export interface UiState {
@@ -70,10 +77,14 @@ export interface GmContext {
   roomName: string
   /** 当前加入密码（'' = 公开房间） */
   roomJoinPwd: string
-  /** 加入房间（main 侧 pull 到本地；gmPwd 可空 = 只读玩家） */
-  onJoinRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
+  /**
+   * 加入房间（main 侧 pull 到本地；gmPwd 可空 = 只读玩家）。
+   * 不带 server 参数：服务器地址只由「连接与登录」弹窗负责，
+   * 房间弹窗只管选哪个仓库，join/create 都不再动 API_BASE
+   */
+  onJoinRoom: (room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
   /** 新建房间（main 侧建仓 + push 本地状态） */
-  onCreateRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
+  onCreateRoom: (room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
   /** 拉取房间列表（公开） */
   onListRooms: () => Promise<string[]>
   /** 本机缓存的已知房间（含密码），供侧边栏一键切换 */
@@ -336,7 +347,9 @@ function renderMoreMenu(
 
   if (!gm.urlReadonly) {
     menu.append(
-      menuItem(gm.authed ? 'GM 管理' : 'GM 登录', () => {
+      // 标签固定不随登录态变：弹窗里既能连服务器也能管凭证，「GM 登录」装不下，
+      // 而房间弹窗的提示又要按名字指路，两处叫法必须一致
+      menuItem(CONNECT_MENU_LABEL, () => {
         ui.moreMenuOpen = false
         ui.gmDialog = true
         ui.gmError = ''
@@ -874,10 +887,12 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
 
   const hint = el('div', 'gm-hint', '')
 
-  const serverInput = makeInput(
-    'text',
-    '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
-    gm.serverBase,
+  // 服务器地址不再在这里填——它只归「连接与登录」管，这里只告知当前连的是哪台，
+  // 免得同一个配置有两个入口，改了这边忘了那边
+  const serverNote = el(
+    'div',
+    'field',
+    `服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
   )
 
   const roomInput = makeInput('text', '房间名', ui.roomPrefill || gm.roomName)
@@ -891,7 +906,6 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   const createBtn = el('button', 'tbtn', '新建房间')
 
   const submit = async (create: boolean) => {
-    const server = serverInput.value.trim()
     const room = roomInput.value.trim()
     const joinPwd = pwdInput.value.trim()
     const gmPwd = gmInput.value.trim()
@@ -905,8 +919,8 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
     }
     hint.textContent = create ? '创建中…' : '连接中…'
     const result = create
-      ? await gm.onCreateRoom(server, room, joinPwd, gmPwd)
-      : await gm.onJoinRoom(server, room, joinPwd, gmPwd)
+      ? await gm.onCreateRoom(room, joinPwd, gmPwd)
+      : await gm.onJoinRoom(room, joinPwd, gmPwd)
     if (result.ok) {
       close()
     } else {
@@ -942,7 +956,7 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
     modal.append(delBtn)
   }
 
-  modal.append(hint, serverInput, roomInput, pwdInput, gmInput, actions)
+  modal.append(hint, serverNote, roomInput, pwdInput, gmInput, actions)
   roomInput.focus()
   return backdrop
 }
