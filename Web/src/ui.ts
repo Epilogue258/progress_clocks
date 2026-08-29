@@ -4,6 +4,7 @@ import { PALETTE, Store } from './state'
 import { svgClock } from './clock-svg'
 import { exportStateAsPng } from './export'
 import { bindDragHandle } from './drag-sort'
+import type { KnownRoom } from './known-rooms'
 
 export type ViewMode = 'grid' | 'list'
 
@@ -24,6 +25,8 @@ export interface UiState {
   moreMenuOpen: boolean
   /** 快捷键说明弹窗 */
   shortcuts: boolean
+  /** 侧边栏的房间搜索词（存这里，重渲染时不丢） */
+  sidebarQuery: string
 }
 
 export type Rerender = () => void
@@ -55,6 +58,12 @@ export interface GmContext {
   onCreateRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
   /** 拉取房间列表（公开） */
   onListRooms: () => Promise<string[]>
+  /** 本机缓存的已知房间（含密码），供侧边栏一键切换 */
+  knownRooms: KnownRoom[]
+  /** 切换到已知房间：直接用缓存的密码进，不必重输 */
+  onSwitchRoom: (entry: KnownRoom) => Promise<RoomResult>
+  /** 忘记某个已知房间：只清本机缓存，不动服务器上的房间 */
+  onForgetRoom: (entry: KnownRoom) => void
   /** 删除房间（需已登录 GM；不可恢复，调用方先确认） */
   onDeleteRoom: (room: string) => Promise<RoomResult>
 }
@@ -920,36 +929,131 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   return backdrop
 }
 
-// ---------- 房间侧边栏（显示所有房间，点击加入） ----------
+// ---------- 房间侧边栏（搜索 + 我的房间 + 全部房间） ----------
 
 function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const aside = el('aside', 'room-sidebar')
-  const titleRow = el('div', 'room-sidebar-title')
-  titleRow.append(el('span', '', '房间'))
-  const list = el('ul', 'room-sidebar-list')
 
-  const load = async () => {
-    list.textContent = ''
-    const rooms = await gm.onListRooms()
-    if (rooms.length === 0) {
-      list.append(el('li', 'room-sidebar-empty', '暂无房间'))
-      return
+  // 搜索框：纯前端过滤，不打服务器。输入时不走 rerender——否则输入框会失焦
+  const search = makeInput('text', '搜索房间…', ui.sidebarQuery)
+  search.className = 'text-input sidebar-search'
+  search.addEventListener('input', () => {
+    ui.sidebarQuery = search.value
+    paint()
+  })
+  aside.append(search)
+
+  const body = el('div', 'sidebar-body')
+  aside.append(body)
+
+  const matches = (name: string): boolean => {
+    const q = ui.sidebarQuery.trim().toLowerCase()
+    return q === '' || name.toLowerCase().includes(q)
+  }
+
+  /** 清空并绘制两段列表。搜索词变化、刷新、忘记房间后都走这里 */
+  function paint(): void {
+    body.textContent = ''
+
+    // ---- 我的房间：本机缓存的，点一下直接切（密码已记住） ----
+    const known = gm.knownRooms.filter((r) => matches(r.room))
+    if (known.length > 0) {
+      body.append(el('div', 'sidebar-section', '我的房间'))
+      const ul = el('ul', 'room-sidebar-list')
+      for (const entry of known) {
+        ul.append(knownRoomItem(entry, gm, paint, rerender))
+      }
+      body.append(ul)
     }
-    for (const room of rooms) {
-      const li = el('li', 'room-sidebar-item', room)
-      li.title = '点击加入（输入密码）'
-      li.addEventListener('click', () => {
-        ui.roomPrefill = room
-        ui.roomDialog = true
-        rerender()
-      })
-      list.append(li)
+
+    // ---- 全部房间：服务器上的，点一下弹窗填密码加入 ----
+    const header = el('div', 'sidebar-section-row')
+    header.append(el('span', 'sidebar-section', '全部房间'))
+    const refresh = el('button', 'sidebar-refresh', '刷新')
+    refresh.title = '重新拉取房间列表'
+    header.append(refresh)
+    body.append(header)
+
+    const allList = el('ul', 'room-sidebar-list')
+    const loading = el('li', 'room-sidebar-empty', '加载中…')
+    allList.append(loading)
+    body.append(allList)
+
+    const loadAll = async () => {
+      const rooms = await gm.onListRooms()
+      // 期间可能又重绘过（搜索词变了/忘了房间），这个节点已被丢弃就别画了
+      if (!allList.isConnected) return
+      allList.textContent = ''
+      const filtered = rooms.filter(matches)
+      if (filtered.length === 0) {
+        allList.append(
+          el('li', 'room-sidebar-empty', rooms.length === 0 ? '暂无房间' : '没有匹配的房间'),
+        )
+        return
+      }
+      for (const room of filtered) {
+        const li = el('li', 'room-sidebar-item')
+        li.append(el('span', 'room-name', room))
+        li.title = '点击加入（需输入密码）'
+        li.addEventListener('click', () => {
+          ui.roomPrefill = room
+          ui.roomDialog = true
+          rerender()
+        })
+        allList.append(li)
+      }
+    }
+    refresh.addEventListener('click', () => void loadAll())
+    void loadAll()
+
+    if (known.length === 0) {
+      // 没有缓存也不代表没有房间，给个说明避免看起来像坏了
+      body.append(el('div', 'sidebar-hint', '加入过的房间会记在这里'))
     }
   }
-  const refresh = el('button', 'tbtn', '刷新')
-  refresh.addEventListener('click', () => void load())
-  titleRow.append(refresh)
-  aside.append(titleRow, list)
-  void load()
+
+  paint()
   return aside
+}
+
+/** 「我的房间」里的一行：点整行切换，✕ 忘记 */
+function knownRoomItem(
+  entry: KnownRoom,
+  gm: GmContext,
+  repaint: () => void,
+  rerender: Rerender,
+): HTMLElement {
+  const active = entry.room === gm.roomName && entry.server === gm.serverBase
+  const li = el('li', 'room-sidebar-item known')
+  if (active) li.classList.add('active')
+
+  const label = el('span', 'room-name', entry.room)
+  li.append(label)
+
+  // 分离模式会连不同的服务器，光有房间名分不清，补一个小字标注
+  if (entry.server) {
+    const host = el('span', 'room-server', entry.server.replace(/^https?:\/\//, ''))
+    host.title = entry.server
+    li.append(host)
+  }
+
+  const forget = el('button', 'room-forget', '✕') as HTMLButtonElement
+  forget.title = '忘记这个房间（只清本机缓存，不删服务器上的房间）'
+  forget.setAttribute('aria-label', `忘记房间 ${entry.room}`)
+  forget.addEventListener('click', (e) => {
+    e.stopPropagation()
+    gm.onForgetRoom(entry)
+    repaint()
+  })
+  li.append(forget)
+
+  li.title = active ? '当前房间' : `切换到「${entry.room}」`
+  li.addEventListener('click', () => {
+    if (active) return
+    void gm.onSwitchRoom(entry).then((result) => {
+      // 失败原因由 main 侧统一 toast，这里只需在成功时收起侧边栏
+      if (result.ok) rerender()
+    })
+  })
+  return li
 }

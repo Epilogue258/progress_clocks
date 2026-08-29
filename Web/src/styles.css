@@ -764,6 +764,9 @@ body.drag-active {
 }
 
 .room-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 10px;
   border-radius: 8px;
   cursor: pointer;
@@ -771,17 +774,115 @@ body.drag-active {
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .room-sidebar-item:hover {
   background: var(--field-bg);
 }
 
+/* 当前所在的房间 */
+.room-sidebar-item.active,
+.room-sidebar-item.active:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.room-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分离模式下同一房间名可能挂在多个服务器上，补个小字标注来源 */
+.room-server {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.room-sidebar-item.active .room-server {
+  color: var(--accent-text);
+  opacity: 0.8;
+}
+
+.room-forget {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+}
+
+.room-forget:hover {
+  background: var(--track);
+  color: var(--danger);
+}
+
+.room-sidebar-item.active .room-forget {
+  color: var(--accent-text);
+}
+
 .room-sidebar-empty {
   padding: 8px 10px;
   font-size: 13px;
   color: var(--text-dim);
+}
+
+.sidebar-search {
+  margin-bottom: 8px;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+.sidebar-section {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin: 10px 0 4px;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-section-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.sidebar-refresh {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.sidebar-refresh:hover {
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+.sidebar-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  line-height: 1.5;
 }
 
 @media (max-width: 640px) {

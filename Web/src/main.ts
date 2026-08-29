@@ -27,6 +27,7 @@ import {
   verifyKey,
   verifyRoomKey,
 } from './api'
+import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './known-rooms'
 
 // server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
 // 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
@@ -80,6 +81,7 @@ const ui: UiState = {
   sidebarOpen: false,
   moreMenuOpen: false,
   shortcuts: false,
+  sidebarQuery: '',
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -192,16 +194,20 @@ const gm: GmContext = {
       enterRoom(server, room, joinPwd)
       store.replaceState(remote)
       ui.sidebarOpen = false
+      // 只有验证通过的 GM 密码才值得缓存；否则下次切换会被无声地当成玩家
+      let effectiveGmPwd = ''
       if (gmPwd) {
         const ok = await verifyRoomKey(API_BASE, room, gmPwd)
         if (ok) {
           gmKey = gmPwd
           gmAuthed = true
+          effectiveGmPwd = gmPwd
           localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
         } else {
           showToast('GM 密码错误，已以只读身份进入')
         }
       }
+      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd: effectiveGmPwd })
       rerender()
       syncPolling()
       return { ok: true as const }
@@ -221,6 +227,7 @@ const gm: GmContext = {
       // 新房间初始 version=0：push 本地状态必须带 0，否则携带本地旧版本会触发 409 假冲突
       const version = await saveRoomState(API_BASE, room, gmPwd, { ...store.syncState, version: 0 })
       store.markSynced(version)
+      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
       rerender()
       syncPolling()
       return { ok: true as const }
@@ -236,10 +243,60 @@ const gm: GmContext = {
       return []
     }
   },
+  /** 本机缓存的已知房间（含密码），供侧边栏一键切换 */
+  get knownRooms() {
+    return loadKnownRooms()
+  },
+  /** 切换到已知房间：直接用缓存的密码进，不必重输 */
+  onSwitchRoom: async (entry: KnownRoom) => {
+    if (entry.room === roomName && entry.server === API_BASE) return { ok: true as const }
+    // 切房间会整体覆盖本地状态，有未同步改动时先确认（与切换服务器一致）
+    if (dirty && !confirm('本地有尚未同步到服务器的改动，切换房间将丢弃这些改动。继续？')) {
+      return { ok: false as const, error: '已取消' }
+    }
+    try {
+      const remote = await fetchRoomState(entry.server, entry.room, entry.joinPwd)
+      enterRoom(entry.server, entry.room, entry.joinPwd)
+      store.replaceState(remote)
+      ui.sidebarOpen = false
+      if (entry.gmPwd) {
+        const ok = await verifyRoomKey(API_BASE, entry.room, entry.gmPwd)
+        gmKey = entry.gmPwd
+        gmAuthed = ok
+        if (ok) localStorage.setItem(ROOM_GM_STORAGE, entry.gmPwd)
+        else localStorage.removeItem(ROOM_GM_STORAGE)
+      } else {
+        gmKey = null
+        gmAuthed = false
+        localStorage.removeItem(ROOM_GM_STORAGE)
+      }
+      // 刷新 lastAt，让它排到缓存列表最前
+      rememberRoom({
+        server: entry.server,
+        room: entry.room,
+        joinPwd: entry.joinPwd,
+        gmPwd: entry.gmPwd,
+      })
+      rerender()
+      syncPolling()
+      return { ok: true as const }
+    } catch (e) {
+      const error = e instanceof ApiError ? e.message : '无法连接该房间'
+      showToast(error)
+      return { ok: false as const, error }
+    }
+  },
+  /** 忘记某个已知房间：只清本机缓存，不动服务器上的房间 */
+  onForgetRoom: (entry: KnownRoom) => {
+    forgetRoom(entry.server, entry.room)
+    rerender()
+  },
   /** 删除房间（GM 密码已在登录态；删除后退出房间回到默认状态） */
   onDeleteRoom: async (room: string) => {
     try {
       await deleteRoom(API_BASE, room, gmKey ?? '')
+      // 服务器上的房间没了，本机缓存里的这条也一并清掉
+      forgetRoom(API_BASE, room)
       roomName = ''
       roomJoinPwd = ''
       gmKey = null
