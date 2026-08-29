@@ -29,5 +29,5 @@ fun ProgressClocksApp() {
     // - 撤销/重做（快照栈），顶栏按钮
     // - 新建：底部 FAB
     // - 本地持久化：状态 JSON -> 内部存储；变更事件模型为同步预留
-    // - 数据模型与 Web/src/types.ts 保持同一契约（camelCase）
+    // - 数据模型与 common/types.ts 保持同一契约（camelCase）
 }

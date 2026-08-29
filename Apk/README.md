@@ -5,7 +5,8 @@ Kotlin + Jetpack Compose 最小工程。本地优先：离线可用，本地 JSO
 ## 打开方式
 
 1. 用 Android Studio 打开本目录（`progress_clocks/Apk`）
-2. 无 gradle wrapper，AS 会用本地 Gradle 或提示配置（Settings > Build Tools > Gradle）
+2. 已带 gradle wrapper（`gradlew` / `gradlew.bat`），AS 直接用它同步；
+   命令行可在目录下跑 `./gradlew assembleDebug`
 3. 首次同步会下载依赖（AGP 8.7.3 / Kotlin 2.0.21 / Compose BOM 2024.12.01）
 
 > 如遇版本报错，按 AS 提示升级 AGP / Kotlin 或调低 compileSdk。
@@ -21,13 +22,15 @@ Kotlin + Jetpack Compose 最小工程。本地优先：离线可用，本地 JSO
 - 撤销/重做：快照栈（全量，50-100 条），顶栏按钮
 - 新建：底部 FAB
 - 本地持久化：状态 JSON 存 app 内部存储；变更事件模型为未来同步预留
-- 数据模型与 `../Web/src/types.ts` 保持同一契约（camelCase 字段名）
+- 数据模型与 `common/types.ts` 保持同一契约（camelCase 字段名）——
+  契约是三端共享的，不在任何一端目录下；边界常量与 `clampInt()` 也都在那儿
 
 ## 目录结构
 
 ```
 Apk/
   settings.gradle.kts / build.gradle.kts / gradle.properties
+  gradlew / gradlew.bat / gradle/wrapper/
   gradle/libs.versions.toml
   app/
     build.gradle.kts
