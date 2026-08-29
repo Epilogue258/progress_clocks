@@ -47,13 +47,6 @@ function checkAuth(req: IncomingMessage): boolean {
   return query === GM_KEY
 }
 
-/** 房间鉴权：读写都需房间密码（Bearer <密码>） */
-function checkRoomAuth(req: IncomingMessage, room: string): boolean {
-  const meta = loadRoomMeta(room)
-  if (!meta) return false
-  return req.headers['authorization'] === `Bearer ${meta.password}`
-}
-
 /** 房间路由解析：/api/room/<name>/<action>，非法路径或非法编码返回 null */
 function parseRoomPath(
   pathname: string,
@@ -187,7 +180,7 @@ const server = createServer(async (req, res) => {
       return
     }
 
-    // 新建房间（创建者设定密码；密码即该房间的读写凭证）
+    // 新建房间（双密码模型：joinPwd 玩家只读可空，gmPwd 写凭证必填 ≥6 位）
     if (req.method === 'POST' && url.pathname === '/api/rooms') {
       const body = await readBody(req)
       let parsed: unknown
@@ -199,41 +192,61 @@ const server = createServer(async (req, res) => {
       }
       const obj = parsed as Record<string, unknown>
       const name = typeof obj?.name === 'string' ? obj.name.trim() : ''
-      const password = typeof obj?.password === 'string' ? obj.password : ''
-      if (!password) {
-        json(res, 400, { ok: false, error: '房间密码不能为空' })
+      const joinPwd = typeof obj?.joinPwd === 'string' ? obj.joinPwd : ''
+      const gmPwd = typeof obj?.gmPwd === 'string' ? obj.gmPwd : ''
+      if (gmPwd.length < 6) {
+        json(res, 400, { ok: false, error: 'GM 密码至少 6 位' })
         return
       }
-      const result = createRoom(name, password)
+      const result = createRoom(name, joinPwd, gmPwd)
       if (result.ok) {
         json(res, 200, { ok: true, room: result.room.name })
       } else if (result.reason === 'exists') {
         json(res, 409, { ok: false, error: '房间已存在' })
+      } else if (result.reason === 'weak-gm-pwd') {
+        json(res, 400, { ok: false, error: 'GM 密码至少 6 位' })
       } else {
         json(res, 400, { ok: false, error: '非法房间名：不能含 / \ 或 Windows 保留字符，1-32 字符' })
       }
       return
     }
 
-    // 房间状态 / 导出图 / 密钥验证（读写都需房间密码）
+    // 房间状态 / 导出图 / 密钥验证（双密码：读用 joinPwd 可空=公开，写用 gmPwd）
     const roomPath = parseRoomPath(url.pathname)
     if (roomPath) {
       const { room, action } = roomPath
-      if (!loadRoomMeta(room)) {
+      const meta = loadRoomMeta(room)
+      if (!meta) {
         json(res, 404, { ok: false, error: '房间不存在' })
         return
       }
-      if (!checkRoomAuth(req, room)) {
-        json(res, 401, { ok: false, error: '未授权：房间密码错误' })
+      const bearer = req.headers['authorization']
+      // GM 密码验证（写权限确认，GM 登录用）
+      if (action === 'auth-check') {
+        if (bearer === `Bearer ${meta.gmPwd}`) {
+          json(res, 200, { ok: true, gm: true })
+        } else {
+          json(res, 401, { ok: false, error: '未授权：GM 密码错误' })
+        }
+        return
+      }
+      // 写：需 GM 密码
+      if (action === 'state' && req.method === 'POST') {
+        if (bearer !== `Bearer ${meta.gmPwd}`) {
+          json(res, 401, { ok: false, error: '未授权：需要 GM 密码' })
+          return
+        }
+        await handleSaveState(req, res, room)
+        return
+      }
+      // 读 / 导出：需加入密码（空 = 公开只读）
+      if (meta.joinPwd !== '' && bearer !== `Bearer ${meta.joinPwd}`) {
+        json(res, 401, { ok: false, error: '未授权：加入密码错误' })
         return
       }
       if (action === 'state') {
         if (req.method === 'GET') {
           json(res, 200, loadState(room))
-          return
-        }
-        if (req.method === 'POST') {
-          await handleSaveState(req, res, room)
           return
         }
         json(res, 405, { ok: false, error: '方法不允许' })
@@ -247,8 +260,7 @@ const server = createServer(async (req, res) => {
         sendExport(res, room, action === 'export.png' ? 'png' : 'svg')
         return
       }
-      // auth-check：密码正确即 GM（房间密码 = 写权限）
-      json(res, 200, { ok: true, gm: true })
+      json(res, 404, { ok: false, error: '未找到' })
       return
     }
 

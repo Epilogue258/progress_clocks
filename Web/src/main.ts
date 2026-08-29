@@ -44,13 +44,17 @@ function resolveApiBase(): string {
 let API_BASE = resolveApiBase()
 
 // 房间配置：?room= URL 参数 > localStorage 记忆（密码仅存 localStorage，不进 URL）
+// 双密码：joinPwd = 玩家只读凭证（可空 = 公开房间），gmPwd = GM 写凭证（必填 ≥6 位）
 const ROOM_STORAGE = 'pc-room-name'
-const ROOM_PWD_STORAGE = 'pc-room-pwd'
+const ROOM_JOIN_STORAGE = 'pc-room-join'
+const ROOM_GM_STORAGE = 'pc-room-gm'
 const GM_KEY_STORAGE = 'pc-gm-key'
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
 
 let roomName = new URLSearchParams(location.search).get('room') ?? localStorage.getItem(ROOM_STORAGE) ?? ''
-let roomPwd = localStorage.getItem(ROOM_PWD_STORAGE) ?? ''
+let roomJoinPwd = localStorage.getItem(ROOM_JOIN_STORAGE) ?? ''
+/** 是否已填过加入密码（含空 = 公开房间），用于进入页判定 */
+let roomJoinSet = localStorage.getItem(ROOM_JOIN_STORAGE) !== null
 
 const root = document.getElementById('app')!
 applyTheme()
@@ -69,9 +73,9 @@ const ui: UiState = { view: 'grid', settingsClockId: null, creating: false, gmDi
 
 // ---------- GM 鉴权状态 ----------
 
-// 房间模式：密码即 GM 凭证（进入页已验证）；默认房间：GM_KEY
-let gmKey: string | null = roomName ? roomPwd : localStorage.getItem(GM_KEY_STORAGE)
-let gmAuthed = roomName ? !!roomPwd : false
+// 房间模式：gmKey = GM 密码（写凭证）；默认房间：GM_KEY
+let gmKey: string | null = roomName ? localStorage.getItem(ROOM_GM_STORAGE) : localStorage.getItem(GM_KEY_STORAGE)
+let gmAuthed = roomName ? !!gmKey : false
 /** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
 let dirty = false
 
@@ -83,8 +87,7 @@ if (!urlReadonly && gmKey) {
     if (!ok) {
       gmKey = null
       if (roomName) {
-        roomPwd = ''
-        localStorage.removeItem(ROOM_PWD_STORAGE)
+        localStorage.removeItem(ROOM_GM_STORAGE)
       } else {
         localStorage.removeItem(GM_KEY_STORAGE)
       }
@@ -102,7 +105,12 @@ const gm: GmContext = {
   get roomName() {
     return roomName
   },
+  /** 当前加入密码（'' = 公开房间） */
+  get roomJoinPwd() {
+    return roomJoinPwd
+  },
   onSubmitKey: async (key) => {
+    // 房间模式：验证 GM 密码（写权限）；默认房间：GM_KEY
     const ok = roomName
       ? await verifyRoomKey(API_BASE, roomName, key)
       : await verifyKey(API_BASE, key)
@@ -110,8 +118,7 @@ const gm: GmContext = {
       gmKey = key
       gmAuthed = true
       if (roomName) {
-        roomPwd = key
-        localStorage.setItem(ROOM_PWD_STORAGE, key)
+        localStorage.setItem(ROOM_GM_STORAGE, key)
       } else {
         localStorage.setItem(GM_KEY_STORAGE, key)
       }
@@ -123,8 +130,7 @@ const gm: GmContext = {
     gmAuthed = false
     gmKey = null
     if (roomName) {
-      roomPwd = ''
-      localStorage.removeItem(ROOM_PWD_STORAGE)
+      localStorage.removeItem(ROOM_GM_STORAGE)
     } else {
       localStorage.removeItem(GM_KEY_STORAGE)
     }
@@ -155,8 +161,7 @@ const gm: GmContext = {
       if (!ok) {
         gmKey = null
         if (roomName) {
-          roomPwd = ''
-          localStorage.removeItem(ROOM_PWD_STORAGE)
+          localStorage.removeItem(ROOM_GM_STORAGE)
         } else {
           localStorage.removeItem(GM_KEY_STORAGE)
         }
@@ -165,12 +170,22 @@ const gm: GmContext = {
     rerender()
     return true
   },
-  /** 加入房间（GitHub 模型：pull 到本地） */
-  onJoinRoom: async (server: string, room: string, pwd: string) => {
+  /** 加入房间（GitHub 模型：pull 到本地；gmPwd 可空 = 只读玩家） */
+  onJoinRoom: async (server: string, room: string, joinPwd: string, gmPwd: string) => {
     try {
-      const remote = await fetchRoomState(normalizeBase(server), room, pwd)
-      enterRoom(server, room, pwd)
+      const remote = await fetchRoomState(normalizeBase(server), room, joinPwd)
+      enterRoom(server, room, joinPwd)
       store.replaceState(remote)
+      if (gmPwd) {
+        const ok = await verifyRoomKey(API_BASE, room, gmPwd)
+        if (ok) {
+          gmKey = gmPwd
+          gmAuthed = true
+          localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
+        } else {
+          showToast('GM 密码错误，已以只读身份进入')
+        }
+      }
       rerender()
       return { ok: true as const }
     } catch (e) {
@@ -178,11 +193,14 @@ const gm: GmContext = {
     }
   },
   /** 新建房间（GitHub 模型：新开仓库并 push 本地状态） */
-  onCreateRoom: async (server: string, room: string, pwd: string) => {
+  onCreateRoom: async (server: string, room: string, joinPwd: string, gmPwd: string) => {
     try {
-      await createRoom(normalizeBase(server), room, pwd)
-      enterRoom(server, room, pwd)
-      const version = await saveRoomState(API_BASE, room, pwd, store.syncState)
+      await createRoom(normalizeBase(server), room, joinPwd, gmPwd)
+      enterRoom(server, room, joinPwd)
+      gmKey = gmPwd
+      gmAuthed = true
+      localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
+      const version = await saveRoomState(API_BASE, room, gmPwd, store.syncState)
       store.markSynced(version)
       rerender()
       return { ok: true as const }
@@ -197,38 +215,37 @@ const rerender = () =>
 
 // ---------- 房间进入 / 同步上下文 ----------
 
-/** 保存房间配置并进入：更新 server/room/密码记忆 + URL 同步（密码不进 URL） */
-function enterRoom(server: string, room: string, pwd: string): void {
+/** 保存房间配置并进入：更新 server/room/加入密码记忆 + URL 同步（密码不进 URL） */
+function enterRoom(server: string, room: string, joinPwd: string): void {
   API_BASE = normalizeBase(server)
   localStorage.setItem(API_BASE_STORAGE, API_BASE)
   roomName = room
-  roomPwd = pwd
-  gmKey = pwd
-  gmAuthed = true
+  roomJoinPwd = joinPwd
+  roomJoinSet = true
   localStorage.setItem(ROOM_STORAGE, room)
-  localStorage.setItem(ROOM_PWD_STORAGE, pwd)
+  localStorage.setItem(ROOM_JOIN_STORAGE, joinPwd)
   const params = new URLSearchParams(location.search)
   if (API_BASE) params.set('server', API_BASE)
   params.set('room', room)
   history.replaceState(null, '', `${location.pathname}?${params.toString()}`)
 }
 
-/** 拉取当前上下文状态（房间模式拉房间状态，否则默认房间） */
+/** 拉取当前上下文状态（房间模式用加入密码拉取，否则默认房间） */
 async function pullCurrent(): Promise<ClockState> {
-  return roomName ? fetchRoomState(API_BASE, roomName, roomPwd) : fetchState(API_BASE)
+  return roomName ? fetchRoomState(API_BASE, roomName, roomJoinPwd) : fetchState(API_BASE)
 }
 
-/** 推送当前状态（房间模式带密码，否则默认房间 + GM 密钥） */
+/** 推送当前状态（房间模式用 GM 密码，否则默认房间 + GM 密钥） */
 async function pushCurrent(): Promise<number> {
   return roomName
-    ? saveRoomState(API_BASE, roomName, roomPwd, store.syncState)
+    ? saveRoomState(API_BASE, roomName, gmKey ?? '', store.syncState)
     : saveState(API_BASE, store.syncState, gmKey ?? undefined)
 }
 
 rerender()
 
-// 进入页判定：分离模式选了 server 但没进房间，或进了房间但没密码（含玩家首次加入）
-if ((API_BASE !== '' && !roomName) || (roomName && !roomPwd)) {
+// 进入页判定：分离模式选了 server 但没进房间，或进了房间但没填过加入密码（含玩家首次加入）
+if ((API_BASE !== '' && !roomName) || (roomName && !roomJoinSet)) {
   ui.roomDialog = true
   rerender()
 }
@@ -268,16 +285,15 @@ store.subscribe(() => {
           // 拉取失败静默
         }
       } else if (e instanceof ApiError && e.status === 401) {
-        // 密钥/密码失效：清除登录态并提示重新输入
+        // GM 密码失效：清除写权限并提示重新输入（加入密码错误则轮询静默，不影响只读）
         gmAuthed = false
         gmKey = null
         if (roomName) {
-          roomPwd = ''
-          localStorage.removeItem(ROOM_PWD_STORAGE)
+          localStorage.removeItem(ROOM_GM_STORAGE)
         } else {
           localStorage.removeItem(GM_KEY_STORAGE)
         }
-        showToast(roomName ? '房间密码失效，请重新输入' : 'GM 密钥失效，请重新登录')
+        showToast(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
         rerender()
       }
       // 其他错误（网络等）静默
@@ -305,7 +321,7 @@ if (urlReadonly) {
     },
     5000,
     roomName,
-    roomPwd,
+    roomJoinPwd,
   )
 }
 

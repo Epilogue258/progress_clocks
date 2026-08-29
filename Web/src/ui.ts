@@ -37,10 +37,12 @@ export interface GmContext {
   onServerChange: (base: string) => Promise<boolean>
   /** 当前房间名（'' = 默认房间） */
   roomName: string
-  /** 加入房间（main 侧 pull 到本地） */
-  onJoinRoom: (server: string, room: string, pwd: string) => Promise<RoomResult>
+  /** 当前加入密码（'' = 公开房间） */
+  roomJoinPwd: string
+  /** 加入房间（main 侧 pull 到本地；gmPwd 可空 = 只读玩家） */
+  onJoinRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
   /** 新建房间（main 侧建仓 + push 本地状态） */
-  onCreateRoom: (server: string, room: string, pwd: string) => Promise<RoomResult>
+  onCreateRoom: (server: string, room: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -537,7 +539,7 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
   const hint = el('div', 'gm-hint', '')
   const input = document.createElement('input')
   input.type = 'password'
-  input.placeholder = 'GM 密钥'
+  input.placeholder = gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥'
   input.autocomplete = 'off'
 
   const actions = el('div', 'modal-actions')
@@ -625,8 +627,14 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
 
   const pwdInput = document.createElement('input')
   pwdInput.type = 'password'
-  pwdInput.placeholder = '房间密码（读写凭证，需发给玩家）'
+  pwdInput.placeholder = '加入密码（可留空 = 公开房间，发给玩家）'
+  pwdInput.value = gm.roomJoinPwd
   pwdInput.autocomplete = 'off'
+
+  const gmInput = document.createElement('input')
+  gmInput.type = 'password'
+  gmInput.placeholder = 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）'
+  gmInput.autocomplete = 'off'
 
   const actions = el('div', 'modal-actions')
   const joinBtn = el('button', 'tbtn primary', '加入房间')
@@ -635,17 +643,20 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   const submit = async (create: boolean) => {
     const server = serverInput.value.trim()
     const room = roomInput.value.trim()
-    const pwd = pwdInput.value.trim()
+    const joinPwd = pwdInput.value.trim()
+    const gmPwd = gmInput.value.trim()
     if (!room) {
       hint.textContent = '请填写房间名'
       return
     }
-    if (!pwd) {
-      hint.textContent = '请填写房间密码'
+    if (create && gmPwd.length < 6) {
+      hint.textContent = 'GM 密码至少 6 位'
       return
     }
     hint.textContent = create ? '创建中…' : '连接中…'
-    const result = create ? await gm.onCreateRoom(server, room, pwd) : await gm.onJoinRoom(server, room, pwd)
+    const result = create
+      ? await gm.onCreateRoom(server, room, joinPwd, gmPwd)
+      : await gm.onJoinRoom(server, room, joinPwd, gmPwd)
     if (result.ok) {
       close()
     } else {
@@ -660,9 +671,12 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   pwdInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') void submit(false)
   })
+  gmInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') void submit(false)
+  })
   actions.append(createBtn, joinBtn)
 
-  modal.append(hint, serverInput, roomInput, pwdInput, actions)
+  modal.append(hint, serverInput, roomInput, pwdInput, gmInput, actions)
   roomInput.focus()
   return backdrop
 }

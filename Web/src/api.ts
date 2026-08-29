@@ -66,7 +66,7 @@ export async function verifyKey(baseUrl: string, key: string): Promise<boolean> 
   }
 }
 
-// ---------- 房间（GitHub 模型：一个 server 多房间，密码 = 读写鉴权） ----------
+// ---------- 房间（GitHub 模型：一个 server 多房间，双密码：joinPwd 只读 / gmPwd 写） ----------
 
 function roomHeaders(pwd: string): Record<string, string> {
   return { Authorization: `Bearer ${pwd}` }
@@ -80,12 +80,17 @@ export async function listRooms(baseUrl: string): Promise<string[]> {
   return body.rooms ?? []
 }
 
-/** 新建房间：创建者设定密码（即该房间的读写凭证） */
-export async function createRoom(baseUrl: string, name: string, password: string): Promise<void> {
+/** 新建房间：joinPwd 玩家只读（可空 = 公开），gmPwd 写凭证（必填 ≥6 位） */
+export async function createRoom(
+  baseUrl: string,
+  name: string,
+  joinPwd: string,
+  gmPwd: string,
+): Promise<void> {
   const res = await fetch(`${baseUrl}/api/rooms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, password }),
+    body: JSON.stringify({ name, joinPwd, gmPwd }),
   })
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null
@@ -93,23 +98,25 @@ export async function createRoom(baseUrl: string, name: string, password: string
   }
 }
 
-/** 拉取房间状态（需密码） */
-export async function fetchRoomState(baseUrl: string, room: string, pwd: string): Promise<ClockState> {
-  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, { headers: roomHeaders(pwd) })
+/** 拉取房间状态（需加入密码；空 = 公开只读房间） */
+export async function fetchRoomState(baseUrl: string, room: string, joinPwd: string): Promise<ClockState> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, {
+    headers: joinPwd ? roomHeaders(joinPwd) : {},
+  })
   if (!res.ok) throw new ApiError(res.status, `获取房间状态失败: ${res.status}`)
   return (await res.json()) as ClockState
 }
 
-/** 全量保存房间状态（需密码；state.version = 乐观锁基线） */
+/** 全量保存房间状态（需 GM 密码；state.version = 乐观锁基线） */
 export async function saveRoomState(
   baseUrl: string,
   room: string,
-  pwd: string,
+  gmPwd: string,
   state: ClockState,
 ): Promise<number> {
   const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...roomHeaders(pwd) },
+    headers: { 'Content-Type': 'application/json', ...roomHeaders(gmPwd) },
     body: JSON.stringify(state),
   })
   if (res.status === 409) {
@@ -121,11 +128,11 @@ export async function saveRoomState(
   return body.version ?? 0
 }
 
-/** 验证房间密码是否有效（密码正确 = 该房间 GM，可写） */
-export async function verifyRoomKey(baseUrl: string, room: string, pwd: string): Promise<boolean> {
+/** 验证 GM 密码是否有效（密码正确 = 该房间 GM，可写） */
+export async function verifyRoomKey(baseUrl: string, room: string, gmPwd: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/auth-check`, {
-      headers: roomHeaders(pwd),
+      headers: roomHeaders(gmPwd),
     })
     return res.ok
   } catch {

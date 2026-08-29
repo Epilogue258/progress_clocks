@@ -17,10 +17,13 @@ const DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
 const DEFAULT_DATA_FILE = join(DATA_DIR, 'state.json')
 const ROOMS_DIR = join(DATA_DIR, 'rooms')
 
-/** 房间元数据：密码为房间级读写鉴权（与默认房间的 GM_KEY 机制对等） */
+/** 房间元数据：双密码模型
+ * - joinPwd：加入密码（玩家只读），可空 = 公开只读
+ * - gmPwd：GM 密码（写凭证），必填 ≥6 位 */
 export interface RoomMeta {
   name: string
-  password: string
+  joinPwd: string
+  gmPwd: string
   createdAt: number
 }
 
@@ -71,15 +74,16 @@ export function saveState(state: ClockState, expectedVersion?: number, room?: st
 
 export type CreateRoomResult =
   | { ok: true; room: RoomMeta }
-  | { ok: false; reason: 'invalid-name' | 'exists' }
+  | { ok: false; reason: 'invalid-name' | 'exists' | 'weak-gm-pwd' }
 
-/** 新建房间：创建独立状态仓库 + 密码元数据；重名或非法名拒绝 */
-export function createRoom(name: string, password: string): CreateRoomResult {
-  if (!isValidRoomName(name) || !password) return { ok: false, reason: 'invalid-name' }
+/** 新建房间：创建独立状态仓库 + 双密码元数据；重名/非法名/弱 GM 密码拒绝 */
+export function createRoom(name: string, joinPwd: string, gmPwd: string): CreateRoomResult {
+  if (!isValidRoomName(name)) return { ok: false, reason: 'invalid-name' }
+  if (gmPwd.length < 6) return { ok: false, reason: 'weak-gm-pwd' }
   const dir = join(ROOMS_DIR, name)
   if (existsSync(dir)) return { ok: false, reason: 'exists' }
   mkdirSync(dir, { recursive: true })
-  const meta: RoomMeta = { name, password, createdAt: Date.now() }
+  const meta: RoomMeta = { name, joinPwd, gmPwd, createdAt: Date.now() }
   writeFileSync(roomMetaFile(name), JSON.stringify(meta, null, 2), 'utf-8')
   writeFileSync(roomStateFile(name), JSON.stringify(createEmptyState(), null, 2), 'utf-8')
   return { ok: true, room: meta }
