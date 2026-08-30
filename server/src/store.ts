@@ -89,6 +89,28 @@ export function createRoom(name: string, joinPwd: string, gmPwd: string): Create
   return { ok: true, room: meta }
 }
 
+export type UpdateRoomMetaResult =
+  | { ok: true; room: RoomMeta }
+  | { ok: false; reason: 'not-found' | 'weak-gm-pwd' }
+
+/**
+ * 修改房间密码：只改传了的字段（joinPwd 可空 = 公开只读；gmPwd 传了须 ≥6 位）。
+ * 与 createRoom 共用同一套密码约束，改后立即对后续读写生效。返回更新后的元数据。
+ */
+export function updateRoomMeta(
+  name: string,
+  patch: { joinPwd?: string; gmPwd?: string },
+): UpdateRoomMetaResult {
+  const meta = loadRoomMeta(name)
+  if (!meta) return { ok: false, reason: 'not-found' }
+  if (patch.gmPwd !== undefined && patch.gmPwd.length < 6) return { ok: false, reason: 'weak-gm-pwd' }
+  const next: RoomMeta = { ...meta }
+  if (patch.joinPwd !== undefined) next.joinPwd = patch.joinPwd
+  if (patch.gmPwd !== undefined) next.gmPwd = patch.gmPwd
+  writeFileSync(roomMetaFile(name), JSON.stringify(next, null, 2), 'utf-8')
+  return { ok: true, room: next }
+}
+
 /** 删除房间（连同状态与元数据）；不存在或非法名返回 false */
 export function deleteRoom(name: string): boolean {
   if (!isValidRoomName(name)) return false

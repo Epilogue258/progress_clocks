@@ -364,6 +364,45 @@ def room_lifecycle(rep: Report, base: str, args) -> None:
                        raw=b'x' * (MAX_BODY_BYTES + 1), timeout=max(args.timeout, 30))
         rep.expect(f'超过 {MAX_BODY_BYTES // 1024 // 1024}MB 的请求体返回 413', huge.status == 413,
                    f'实际 {huge.status}')
+
+        # ---- 改密码（PATCH /api/room/<name>，对外 API，需 GM 密码） ----
+        patch_url = f'/api/room/{qname}'
+        # 未授权 / 空 patch / 弱 GM 密码应被拒
+        bad_patch = request(base, 'PATCH', patch_url, token=gm_pwd + 'x',
+                            payload={'joinPwd': 'hacked'}, timeout=args.timeout)
+        rep.expect('错误 GM 密码改密码返回 401', bad_patch.status == 401, f'实际 {bad_patch.status}')
+        empty_patch = request(base, 'PATCH', patch_url, token=gm_pwd,
+                              payload={}, timeout=args.timeout)
+        rep.expect('空字段改密码返回 400', empty_patch.status == 400, f'实际 {empty_patch.status}')
+        weak_patch = request(base, 'PATCH', patch_url, token=gm_pwd,
+                             payload={'gmPwd': '123'}, timeout=args.timeout)
+        rep.expect('弱 GM 密码改密返回 400', weak_patch.status == 400, f'实际 {weak_patch.status}')
+
+        # 改加入密码：只改 joinPwd，gmPwd 保持；新密码立即生效、旧密码失效
+        new_join = (join_pwd or 'read') + '-v2'
+        patched = request(base, 'PATCH', patch_url, token=gm_pwd,
+                          payload={'joinPwd': new_join}, timeout=args.timeout)
+        if rep.expect('PATCH 改加入密码返回 200', patched.status == 200, f'{patched.status} {patched.text[:120]}'):
+            room = (patched.json() or {}).get('room') or {}
+            rep.expect('响应回显新 joinPwd', room.get('joinPwd') == new_join, f"实际 {room.get('joinPwd')!r}")
+            rep.expect('新加入密码可读', request(base, 'GET', state_url, token=new_join,
+                                            timeout=args.timeout).status == 200, '')
+            if join_pwd:
+                rep.expect('旧加入密码失效（401）', request(base, 'GET', state_url, token=join_pwd,
+                                                        timeout=args.timeout).status == 401, '')
+            join_pwd = new_join
+            read_token = new_join or None
+
+        # 改 GM 密码：新密码立即生效、旧密码失效；后续清理用新密码
+        new_gm = gm_pwd + '-v2'
+        patched2 = request(base, 'PATCH', patch_url, token=gm_pwd,
+                           payload={'gmPwd': new_gm}, timeout=args.timeout)
+        if rep.expect('PATCH 改 GM 密码返回 200', patched2.status == 200, f'{patched2.status} {patched2.text[:120]}'):
+            old_auth = request(base, 'GET', f'/api/room/{qname}/auth-check', token=gm_pwd, timeout=args.timeout)
+            rep.expect('旧 GM 密码失效（401）', old_auth.status == 401, f'实际 {old_auth.status}')
+            new_auth = request(base, 'GET', f'/api/room/{qname}/auth-check', token=new_gm, timeout=args.timeout)
+            rep.expect('新 GM 密码可验证（200）', new_auth.status == 200, f'实际 {new_auth.status}')
+            gm_pwd = new_gm
     finally:
         deleted = request(base, 'DELETE', f'/api/room/{qname}', token=gm_pwd, timeout=args.timeout)
         rep.expect('清理临时房间', deleted.status == 200, f'实际 {deleted.status}')

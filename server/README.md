@@ -26,6 +26,27 @@ cd ../server && npm install && npm start
 | GET | `/api/export.svg` | 导出图 SVG（调试用） |
 | GET | `/*` | 静态托管 `Web/dist` 构建产物 |
 
+### 房间 API（GitHub 模型：一个房间 = 一次团）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/rooms` | 房间列表（公开，只暴露名字） |
+| POST | `/api/rooms` | 新建房间（body: `name` + `joinPwd`（可空=公开）+ `gmPwd`（≥6 位）；重名 409） |
+| GET | `/api/room/<name>/state` | 房间状态（需加入密码；公开房间免密） |
+| POST | `/api/room/<name>/state` | 全量保存（需 GM 密码 + 乐观锁；省略 version = 强制覆盖） |
+| GET | `/api/room/<name>/export.png` / `.svg` | 房间导出图（需加入密码） |
+| GET | `/api/room/<name>/auth-check` | GM 密码验证（写权限确认） |
+| PATCH | `/api/room/<name>` | 修改房间密码（需 GM 密码；body `{ joinPwd?, gmPwd? }`，只改传了的字段，gmPwd 传了须 ≥6 位） |
+| DELETE | `/api/room/<name>` | 删除房间（需 GM 密码；不可恢复） |
+
+```bash
+# 修改房间密码（对外 API，QQ Bot 等外部插件也可调用；只改传了的字段）
+curl -X PATCH http://服务器:2333/api/room/房间名 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer GM密码" \
+  -d '{"joinPwd": "新加入密码", "gmPwd": "新GM密码"}'
+```
+
 - CORS 全开（`Access-Control-Allow-Origin: *`），方便独立部署的 Web 端跨域调用
 - PNG 渲染依赖 `@resvg/resvg-js`（预编译，无需原生编译）
 

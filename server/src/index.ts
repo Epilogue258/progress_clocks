@@ -23,7 +23,7 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildExportSvg } from '../../common/export-svg.ts'
-import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, saveState } from './store.ts'
+import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, saveState, updateRoomMeta } from './store.ts'
 import { renderPng } from './render.ts'
 
 // 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
@@ -177,7 +177,7 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
 const server = createServer(async (req, res) => {
   // CORS：允许独立部署的 Web 端 / 外部插件跨域访问
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   // 注意：跨域（分离模式 file:// 或异源托管）时带 Authorization 头必须 preflight 放行
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   if (req.method === 'OPTIONS') {
@@ -238,6 +238,40 @@ const server = createServer(async (req, res) => {
         return
       }
       const bearer = req.headers['authorization']
+      // 修改房间密码：需 GM 密码；只改请求体里传了的字段（joinPwd / gmPwd）。
+      // 对外 API（同导出图）：Bot 等外部插件也能调用，前端与插件共用同一契约
+      if (req.method === 'PATCH') {
+        if (bearer !== `Bearer ${meta.gmPwd}`) {
+          json(res, 401, { ok: false, error: '未授权：需要 GM 密码' })
+          return
+        }
+        const body = await readBody(req)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(body)
+        } catch {
+          json(res, 400, { ok: false, error: 'JSON 解析失败' })
+          return
+        }
+        const obj = parsed as Record<string, unknown>
+        const joinPwd = typeof obj?.joinPwd === 'string' ? obj.joinPwd : undefined
+        const gmPwd = typeof obj?.gmPwd === 'string' ? obj.gmPwd : undefined
+        if (joinPwd === undefined && gmPwd === undefined) {
+          json(res, 400, { ok: false, error: '没有要修改的字段（joinPwd / gmPwd）' })
+          return
+        }
+        const result = updateRoomMeta(room, { joinPwd, gmPwd })
+        if (!result.ok) {
+          if (result.reason === 'weak-gm-pwd') {
+            json(res, 400, { ok: false, error: 'GM 密码至少 6 位' })
+          } else {
+            json(res, 404, { ok: false, error: '房间不存在' })
+          }
+          return
+        }
+        json(res, 200, { ok: true, room: result.room })
+        return
+      }
       // 删除房间：需 GM 密码（不可恢复，调用方必须确认）
       if (req.method === 'DELETE') {
         if (bearer !== `Bearer ${meta.gmPwd}`) {
@@ -344,7 +378,7 @@ server.listen(PORT, () => {
   console.log(`  状态 API:   GET/POST /api/state（POST 需鉴权）`)
   console.log(`  鉴权验证:   GET /api/auth-check`)
   console.log(`  导出图片:   GET /api/export.png  |  /api/export.svg`)
-  console.log(`  房间:       GET/POST /api/rooms | GET/POST /api/room/<name>/state（密码=读写鉴权）`)
+  console.log(`  房间:       GET/POST /api/rooms | GET/POST /api/room/<name>/state | PATCH/DELETE /api/room/<name>（密码=读写鉴权）`)
   console.log(`  静态托管:   Web/dist（先执行 Web 目录下 npm run build）`)
   if (GM_KEY) {
     console.log(`  写鉴权:     已启用（GM_KEY 已设置；请求带 Authorization: Bearer <GM_KEY>）`)
