@@ -910,6 +910,94 @@ body.drag-active {
   line-height: 1.5;
 }
 
+/* 侧边栏折叠分组：远程房间 / 本地房间 */
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 10px 0 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sidebar-group-title {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-caret {
+  font-size: 9px;
+  display: inline-block;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+.sidebar-group-header.collapsed .sidebar-caret {
+  transform: rotate(-90deg);
+}
+
+.sidebar-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* 分组头右侧的「+」新建按钮（与刷新同款） */
+.sidebar-add {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.sidebar-add:hover {
+  color: var(--text);
+  background: var(--field-bg);
+}
+
+/* 远端房间访问标签：可编辑（有 GM 密码）> 可访问（只读） */
+.room-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--track);
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.room-sidebar-item.active .room-tag {
+  background: var(--accent-text);
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+/* 房间管理弹窗里「保存更改（改密码）」展开区 */
+.change-pwd {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--track);
+}
+
+.change-pwd .tbtn {
+  align-self: flex-end;
+}
+
 @media (max-width: 640px) {
   /* 手机：侧边栏改为顶部的横向滚动房间条（不隐藏，玩家手机也能看到房间） */
   .main-body {

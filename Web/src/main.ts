@@ -12,9 +12,10 @@
 import './styles.css'
 import { Store, STORAGE_KEY } from './state'
 import { applyTheme, emptyRoomDraft, openRoomDialog, render, type GmContext, type UiState } from './ui'
-import type { ClockState } from '../../common/types'
+import { createEmptyState, type ClockState } from '../../common/types'
 import {
   ApiError,
+  changeRoomPwd,
   createRoom,
   deleteRoom,
   fetchRoomState,
@@ -95,6 +96,15 @@ const ui: UiState = {
   gmError: '',
   roomError: '',
   roomDraft: emptyRoomDraft(),
+  sidebarRemoteOpen: true,
+  sidebarLocalOpen: true,
+  manageRoomDialog: false,
+  manageError: '',
+  changePwdOpen: false,
+  changePwdDraft: { joinPwd: '', gmPwd: '' },
+  localRoomDialog: false,
+  localRoomDraft: '',
+  localRoomError: '',
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -395,6 +405,47 @@ const gm: GmContext = {
     }
     return { ok: true as const }
   },
+  /** 进入已有的本地房间（读它的状态槽，不联网） */
+  onEnterLocalRoom: (name: string) => {
+    enterLocalRoom(name)
+    rerender()
+    return { ok: true as const }
+  },
+  /**
+   * 修改房间密码（PATCH）：只改填了的字段；改完同步本机缓存——
+   * GM 密码变了本地得跟着换，否则下一次 push 直接 401。
+   */
+  onChangePwd: async (joinPwd: string, gmPwd: string) => {
+    const patch: { joinPwd?: string; gmPwd?: string } = {}
+    if (joinPwd) patch.joinPwd = joinPwd
+    if (gmPwd) patch.gmPwd = gmPwd
+    if (!patch.joinPwd && !patch.gmPwd) return { ok: false as const, error: '没有要修改的密码' }
+    try {
+      await changeRoomPwd(API_BASE, roomName, gmKey ?? '', patch)
+    } catch (e) {
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
+    if (patch.gmPwd) {
+      gmKey = patch.gmPwd
+      localStorage.setItem(ROOM_GM_STORAGE, patch.gmPwd)
+    }
+    if (patch.joinPwd) {
+      roomJoinPwd = patch.joinPwd
+      localStorage.setItem(ROOM_JOIN_STORAGE, patch.joinPwd)
+    }
+    // known-rooms 缓存里该条也刷新（只动存在的那条，别改排序）
+    const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === roomName)
+    if (entry) {
+      rememberRoom({
+        server: entry.server,
+        room: entry.room,
+        joinPwd: patch.joinPwd ?? entry.joinPwd,
+        gmPwd: patch.gmPwd ?? entry.gmPwd,
+      })
+    }
+    showToast('密码已更新')
+    return { ok: true as const }
+  },
 }
 
 const rerender = () => render(root, store, ui, !canEdit(), rerender, gm)
@@ -464,7 +515,9 @@ function leaveRoom(): void {
   gmKey = null
   gmAuthed = false
   dirty = false
+  // 空白工作区是干净起步：先切回全局槽，再置空（不留上一个远端房间的缓存）
   store.attachSlot(STORAGE_KEY)
+  store.replaceState(createEmptyState())
   rerender()
   syncPolling()
 }
@@ -488,12 +541,15 @@ rerender()
 // 启动即本地工作区（目标架构：不强制进远端房间）：
 // - 本地房间：切到该房间的状态槽，不联网
 // - 远端房间：拉服务器状态（server 权威）
-// - 空白工作区：本地槽，什么都不做
+// - 空白工作区：干净起步，不拉任何东西
 if (roomLocal) {
   store.attachSlot(localSlotKey(roomName))
   rerender()
 } else if (roomName) {
   void bootstrapPull()
+} else {
+  store.replaceState(createEmptyState())
+  rerender()
 }
 
 // ---------- 同步层 ----------
@@ -673,7 +729,12 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (ui.moreMenuOpen) ui.moreMenuOpen = false
     else if (ui.shortcuts) ui.shortcuts = false
-    else if (ui.roomDialog) ui.roomDialog = false
+    else if (ui.localRoomDialog) ui.localRoomDialog = false
+    else if (ui.manageRoomDialog) {
+      ui.manageRoomDialog = false
+      ui.manageError = ''
+      ui.changePwdOpen = false
+    } else if (ui.roomDialog) ui.roomDialog = false
     else if (ui.creating) ui.creating = false
     else if (ui.gmDialog) {
       ui.gmDialog = false

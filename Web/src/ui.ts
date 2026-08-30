@@ -49,6 +49,24 @@ export interface UiState {
   sidebarQuery: string
   /** 房间弹窗的提示文案（连接中 / 密码错误 / 重名等）。同 gmError，异步结果不写 DOM */
   roomError: string
+  /** 侧边栏「远程房间」折叠组是否展开（默认展开） */
+  sidebarRemoteOpen: boolean
+  /** 侧边栏「本地房间」折叠组是否展开（默认展开） */
+  sidebarLocalOpen: boolean
+  /** 已连接时的房间管理弹窗（保存更改=改密码 / 删除房间 / 退出） */
+  manageRoomDialog: boolean
+  /** 房间管理弹窗的提示文案 */
+  manageError: string
+  /** 房间管理弹窗里「保存更改（改密码）」表单是否展开 */
+  changePwdOpen: boolean
+  /** 改密码表单草稿（报错重渲染时不丢） */
+  changePwdDraft: { joinPwd: string; gmPwd: string }
+  /** 新建本地房间弹窗 */
+  localRoomDialog: boolean
+  /** 新建本地房间弹窗的草稿名 */
+  localRoomDraft: string
+  /** 新建本地房间弹窗的提示文案 */
+  localRoomError: string
 }
 
 export type Rerender = () => void
@@ -131,6 +149,10 @@ export interface GmContext {
   onCreateLocalRoom: (name: string) => RoomResult
   /** 删除本地房间（清注册表与状态槽；删的是当前房间则退回空白工作区） */
   onDeleteLocalRoom: (name: string) => RoomResult
+  /** 进入已有的本地房间（读它的状态槽，不联网） */
+  onEnterLocalRoom: (name: string) => RoomResult
+  /** 修改房间密码（PATCH）：只改填了的字段；改完同步本机缓存 */
+  onChangePwd: (joinPwd: string, gmPwd: string) => Promise<RoomResult>
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -188,6 +210,12 @@ export function render(
   }
   if (ui.roomDialog) {
     root.append(renderRoomModal(ui, gm, rerender))
+  }
+  if (ui.manageRoomDialog) {
+    root.append(renderManageRoomModal(ui, gm, rerender))
+  }
+  if (ui.localRoomDialog) {
+    root.append(renderLocalRoomModal(ui, gm, rerender))
   }
   if (!gm.urlReadonly && ui.gmDialog) {
     root.append(renderGmLoginModal(ui, gm, rerender))
@@ -290,13 +318,21 @@ function renderTopbar(
   bar.append(menuBtn)
   bar.append(el('span', 'title', '进度钟'))
 
-  // 房间连接入口（所有模式可见：GM 建房间 / 玩家加入）
-  const roomBtn = el('button', 'tbtn room-btn', gm.roomName || '连接')
+  // 房间入口：已连接 → 打开房间管理弹窗；空白工作区 → 打开侧边栏（房间都在那儿建）
+  const roomLabel = gm.roomName || '工作区'
+  const roomBtn = el('button', 'tbtn room-btn', roomLabel)
   roomBtn.title = gm.roomName
-    ? `房间：${gm.roomName}（点击切换 / 新建）`
-    : '连接服务器房间（加入 / 新建）'
+    ? `房间：${gm.roomName}（点击管理）`
+    : '本地工作区（点击打开房间列表）'
   roomBtn.addEventListener('click', () => {
-    openRoomDialog(ui)
+    if (gm.roomName) {
+      ui.manageRoomDialog = true
+      ui.manageError = ''
+      ui.changePwdOpen = false
+      ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+    } else {
+      ui.sidebarOpen = true
+    }
     rerender()
   })
   bar.append(roomBtn)
@@ -390,6 +426,16 @@ function renderMoreMenu(
         ui.gmDialog = true
         ui.gmError = ''
         rerender()
+      }),
+    )
+  }
+
+  // 退出房间：低频操作，和连接与登录同一档（进房间后才有）
+  if (gm.roomName) {
+    menu.append(
+      menuItem('退出房间', () => {
+        ui.moreMenuOpen = false
+        void gm.onLeaveRoom().then(() => rerender())
       }),
     )
   }
@@ -1000,49 +1046,163 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   }
   actions.append(createBtn, joinBtn)
 
-  // 房间内才有的两个动作：退出（服务器上的房间留着）与删除（不可恢复）。
-  // 放同一行而不是各占一行——退出不是破坏性操作，不该和删除一样有分量
-  const roomActions = el('div', 'modal-actions')
-  if (gm.roomName) {
-    const leaveBtn = el('button', 'tbtn', '退出房间')
-    leaveBtn.title = '回到默认房间；服务器上的房间保留'
-    // 确认放在 main 侧：只有那儿知道本地有没有未同步的改动（dirty）。
-    // 与加入 / 切换房间同一个口径——没事就别拿弹窗烦人
-    leaveBtn.addEventListener('click', async () => {
-      const result = await gm.onLeaveRoom()
-      if (result.ok) {
-        close()
-      } else {
-        ui.roomError = result.error
-        rerender()
-      }
-    })
-    roomActions.append(leaveBtn)
-  }
-  if (gm.authed && gm.roomName) {
-    const delBtn = el('button', 'tbtn danger', '删除当前房间')
-    delBtn.title = '删除后所有进度钟将丢失，无法恢复'
-    delBtn.addEventListener('click', async () => {
-      if (!confirm(`删除房间「${gm.roomName}」？此操作不可恢复，所有进度钟将丢失。`)) return
-      const result = await gm.onDeleteRoom(gm.roomName)
-      if (result.ok) {
-        close()
-      } else {
-        ui.roomError = result.error
-        rerender()
-      }
-    })
-    roomActions.append(delBtn)
-  }
-
   modal.append(hint, serverNote, roomInput, pwdInput, gmInput, actions)
-  // 空的行会白留一道 gap，只有真有按钮时才挂上去
-  if (roomActions.children.length) modal.append(roomActions)
   roomInput.focus()
   return backdrop
 }
 
-// ---------- 房间侧边栏（搜索 + 我的房间 + 全部房间） ----------
+// ---------- 房间管理弹窗（已连接：保存更改=改密码 / 删除房间 / 退出） ----------
+
+function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
+  const { backdrop, modal, close } = modalShell('房间管理', () => {
+    ui.manageRoomDialog = false
+    ui.manageError = ''
+    ui.changePwdOpen = false
+    ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+    rerender()
+  })
+
+  const hint = el('div', 'gm-hint', ui.manageError)
+  modal.append(
+    hint,
+    el('div', 'field', `房间：${gm.roomName}${gm.serverBase ? `（${gm.serverBase.replace(/^https?:\/\//, '')}）` : ''}`),
+  )
+
+  const actions = el('div', 'modal-actions')
+
+  if (gm.roomLocal) {
+    // 本地房间：没有密码可改，只有删除本地 + 退出
+    const delLocal = el('button', 'tbtn danger', '删除本地房间')
+    delLocal.title = '本机数据，不可恢复'
+    delLocal.addEventListener('click', () => {
+      if (!confirm(`删除本地房间「${gm.roomName}」？所有进度钟将丢失。`)) return
+      const result = gm.onDeleteLocalRoom(gm.roomName)
+      if (result.ok) close()
+      else {
+        ui.manageError = result.error
+        rerender()
+      }
+    })
+    actions.append(delLocal)
+  } else if (gm.authed) {
+    // 远端房间 + 已登录：保存更改（改密码）+ 删除房间
+    const saveBtn = el('button', 'tbtn', '保存更改')
+    saveBtn.title = '修改加入密码 / GM 密码'
+    saveBtn.addEventListener('click', () => {
+      ui.changePwdOpen = !ui.changePwdOpen
+      ui.manageError = ''
+      rerender()
+    })
+    actions.append(saveBtn)
+
+    const delBtn = el('button', 'tbtn danger', '删除房间')
+    delBtn.title = '删除后所有进度钟将丢失，无法恢复'
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`删除房间「${gm.roomName}」？此操作不可恢复，所有进度钟将丢失。`)) return
+      const result = await gm.onDeleteRoom(gm.roomName)
+      if (result.ok) close()
+      else {
+        ui.manageError = result.error
+        rerender()
+      }
+    })
+    actions.append(delBtn)
+  }
+
+  // 退出：所有已连接状态都有（退出 = 回到本地空白工作区）
+  const leaveBtn = el('button', 'tbtn', '退出房间')
+  leaveBtn.title = '回到本地空白工作区；远端房间保留在服务器上'
+  leaveBtn.addEventListener('click', async () => {
+    const result = await gm.onLeaveRoom()
+    if (result.ok) close()
+    else {
+      ui.manageError = result.error
+      rerender()
+    }
+  })
+  actions.append(leaveBtn)
+  modal.append(actions)
+
+  // 「保存更改」展开的改密码表单（只对远端房间 + GM）
+  if (!gm.roomLocal && ui.changePwdOpen && gm.authed) {
+    const pwdSection = el('div', 'change-pwd')
+    pwdSection.append(el('label', 'field', '修改密码（留空 = 不改）'))
+    const joinInput = makeInput('password', '新加入密码（留空 = 不修改）', ui.changePwdDraft.joinPwd)
+    const gmInput = makeInput('password', '新 GM 密码（留空 = 不修改，≥6 位）', ui.changePwdDraft.gmPwd)
+    joinInput.addEventListener('input', () => {
+      ui.changePwdDraft.joinPwd = joinInput.value
+    })
+    gmInput.addEventListener('input', () => {
+      ui.changePwdDraft.gmPwd = gmInput.value
+    })
+    pwdSection.append(joinInput, gmInput)
+    const savePwd = el('button', 'tbtn primary', '保存') as HTMLButtonElement
+    const submitPwd = async () => {
+      const result = await gm.onChangePwd(ui.changePwdDraft.joinPwd.trim(), ui.changePwdDraft.gmPwd.trim())
+      if (result.ok) {
+        ui.changePwdOpen = false
+        ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+        rerender()
+      } else {
+        ui.manageError = result.error
+        rerender()
+      }
+    }
+    savePwd.addEventListener('click', () => void submitPwd())
+    for (const input of [joinInput, gmInput]) {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') void submitPwd()
+      })
+    }
+    pwdSection.append(savePwd)
+    modal.append(pwdSection)
+    joinInput.focus()
+  }
+
+  return backdrop
+}
+
+// ---------- 新建本地房间弹窗（名字即可，本地房间永不联网） ----------
+
+function renderLocalRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
+  const { backdrop, modal, close } = modalShell('新建本地房间', () => {
+    ui.localRoomDialog = false
+    ui.localRoomError = ''
+    ui.localRoomDraft = ''
+    rerender()
+  })
+
+  const hint = el('div', 'gm-hint', ui.localRoomError)
+  const nameInput = makeInput('text', '房间名（如：草稿）', ui.localRoomDraft)
+  nameInput.maxLength = 40
+  nameInput.addEventListener('input', () => {
+    ui.localRoomDraft = nameInput.value
+  })
+
+  const actions = el('div', 'modal-actions')
+  const cancelBtn = el('button', 'tbtn', '取消')
+  cancelBtn.addEventListener('click', close)
+  const createBtn = el('button', 'tbtn primary', '创建') as HTMLButtonElement
+  createBtn.addEventListener('click', () => {
+    const result = gm.onCreateLocalRoom(nameInput.value)
+    if (result.ok) close()
+    else {
+      ui.localRoomError = result.error
+      rerender()
+    }
+  })
+  actions.append(cancelBtn, createBtn)
+
+  modal.append(hint, el('label', 'field', '名字'), nameInput, actions)
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createBtn.click()
+    if (e.key === 'Escape') cancelBtn.click()
+  })
+  nameInput.focus()
+  return backdrop
+}
+
+// ---------- 房间侧边栏（搜索 + 远程房间 + 本地房间，各自可折叠） ----------
 
 function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const aside = el('aside', 'room-sidebar')
@@ -1064,63 +1224,99 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
     return q === '' || name.toLowerCase().includes(q)
   }
 
-  /** 清空并绘制两段列表。搜索词变化、刷新、忘记房间后都走这里 */
+  /** 清空并重绘两组列表。搜索词变化、折叠切换、刷新后都走这里 */
   function paint(): void {
     body.textContent = ''
 
-    // ---- 我的房间：本机缓存的，点一下直接切（密码已记住） ----
-    const known = gm.knownRooms.filter((r) => matches(r.room))
-    if (known.length > 0) {
-      body.append(el('div', 'sidebar-section', '我的房间'))
-      const ul = el('ul', 'room-sidebar-list')
-      for (const entry of known) {
-        ul.append(knownRoomItem(entry, gm, paint, rerender))
-      }
-      body.append(ul)
-    }
-
-    // ---- 全部房间：服务器上的，点一下弹窗填密码加入 ----
-    const header = el('div', 'sidebar-section-row')
-    header.append(el('span', 'sidebar-section', '全部房间'))
+    // ---- 远程房间：服务器全量列表；已取得凭证的挂「可编辑 / 可访问」标签 ----
+    const remoteHeader = sidebarGroupHeader('远程房间', ui.sidebarRemoteOpen, () => {
+      ui.sidebarRemoteOpen = !ui.sidebarRemoteOpen
+      paint()
+    })
+    const remoteAdd = el('button', 'sidebar-add', '+')
+    remoteAdd.title = '新建 / 加入远程房间'
+    remoteAdd.setAttribute('aria-label', '新建远程房间')
+    remoteAdd.addEventListener('click', (e) => {
+      e.stopPropagation()
+      openRoomDialog(ui)
+      rerender()
+    })
     const refresh = el('button', 'sidebar-refresh', '刷新')
     refresh.title = '重新拉取房间列表'
-    header.append(refresh)
-    body.append(header)
+    refresh.addEventListener('click', () => {
+      ui.sidebarRemoteOpen = true
+      paint()
+    })
+    remoteHeader.append(remoteAdd, refresh)
+    body.append(remoteHeader)
 
-    const allList = el('ul', 'room-sidebar-list')
-    const loading = el('li', 'room-sidebar-empty', '加载中…')
-    allList.append(loading)
-    body.append(allList)
-
-    const loadAll = async () => {
-      const rooms = await gm.onListRooms()
-      // 期间可能又重绘过（搜索词变了/忘了房间），这个节点已被丢弃就别画了
-      if (!allList.isConnected) return
-      allList.textContent = ''
-      const filtered = rooms.filter(matches)
-      if (filtered.length === 0) {
-        allList.append(
-          el('li', 'room-sidebar-empty', rooms.length === 0 ? '暂无房间' : '没有匹配的房间'),
-        )
-        return
-      }
-      for (const room of filtered) {
-        const li = el('li', 'room-sidebar-item')
-        li.append(el('span', 'room-name', room))
-        li.title = '点击加入（需输入密码）'
-        li.addEventListener('click', () => {
-          openRoomDialog(ui, room)
-          rerender()
-        })
-        allList.append(li)
-      }
+    if (ui.sidebarRemoteOpen) {
+      const remoteList = el('ul', 'room-sidebar-list')
+      remoteList.append(el('li', 'room-sidebar-empty', '加载中…'))
+      body.append(remoteList)
+      void (async () => {
+        let rooms: string[] = []
+        let failed = false
+        try {
+          rooms = await gm.onListRooms()
+        } catch {
+          failed = true
+        }
+        // 期间可能又重绘过（搜索词变了 / 折叠了），这个节点已被丢弃就别画了
+        if (!remoteList.isConnected) return
+        remoteList.textContent = ''
+        if (failed) {
+          remoteList.append(
+            el(
+              'li',
+              'room-sidebar-empty',
+              gm.serverBase ? '无法连接服务器' : '未配置服务器（顶栏 ⋯ →「连接与登录」）',
+            ),
+          )
+          return
+        }
+        const filtered = rooms.filter(matches)
+        if (filtered.length === 0) {
+          remoteList.append(
+            el('li', 'room-sidebar-empty', rooms.length === 0 ? '暂无远程房间' : '没有匹配的房间'),
+          )
+          return
+        }
+        for (const room of filtered) {
+          remoteList.append(remoteRoomItem(room, ui, gm, rerender))
+        }
+      })()
     }
-    refresh.addEventListener('click', () => void loadAll())
-    void loadAll()
 
-    if (known.length === 0) {
-      // 没有缓存也不代表没有房间，给个说明避免看起来像坏了
-      body.append(el('div', 'sidebar-hint', '加入过的房间会记在这里'))
+    // ---- 本地房间：本机草稿，点一下直接进，不联网 ----
+    const localHeader = sidebarGroupHeader('本地房间', ui.sidebarLocalOpen, () => {
+      ui.sidebarLocalOpen = !ui.sidebarLocalOpen
+      paint()
+    })
+    const localAdd = el('button', 'sidebar-add', '+')
+    localAdd.title = '新建本地房间（草稿工作区）'
+    localAdd.setAttribute('aria-label', '新建本地房间')
+    localAdd.addEventListener('click', (e) => {
+      e.stopPropagation()
+      ui.localRoomDialog = true
+      ui.localRoomError = ''
+      ui.localRoomDraft = ''
+      rerender()
+    })
+    localHeader.append(localAdd)
+    body.append(localHeader)
+
+    if (ui.sidebarLocalOpen) {
+      const localList = el('ul', 'room-sidebar-list')
+      const locals = gm.localRooms.filter(matches)
+      if (locals.length === 0) {
+        localList.append(el('li', 'room-sidebar-empty', '暂无本地房间'))
+      } else {
+        for (const name of locals) {
+          localList.append(localRoomItem(name, gm, rerender))
+        }
+      }
+      body.append(localList)
     }
   }
 
@@ -1128,44 +1324,78 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
   return aside
 }
 
-/** 「我的房间」里的一行：点整行切换，✕ 忘记 */
-function knownRoomItem(
-  entry: KnownRoom,
+/** 侧边栏折叠分组头：标题 + 折叠箭头，点整行展开/收起 */
+function sidebarGroupHeader(
+  label: string,
+  open: boolean,
+  onToggle: () => void,
+): HTMLElement {
+  const header = el('div', `sidebar-group-header${open ? '' : ' collapsed'}`)
+  const title = el('span', 'sidebar-group-title')
+  title.append(el('span', 'sidebar-caret', open ? '▼' : '▶'), el('span', 'sidebar-group-label', label))
+  header.append(title)
+  header.addEventListener('click', onToggle)
+  return header
+}
+
+/** 远程房间一行：已取得凭证的挂标签直接切（可编辑 > 可访问），否则弹窗填密码加入 */
+function remoteRoomItem(
+  room: string,
+  ui: UiState,
   gm: GmContext,
-  repaint: () => void,
   rerender: Rerender,
 ): HTMLElement {
-  const active = entry.room === gm.roomName && entry.server === gm.serverBase
-  const li = el('li', 'room-sidebar-item known')
+  const known = gm.knownRooms.find((r) => r.room === room && r.server === gm.serverBase)
+  const active = !gm.roomLocal && room === gm.roomName
+  const li = el('li', 'room-sidebar-item remote')
   if (active) li.classList.add('active')
+  li.append(el('span', 'room-name', room))
 
-  const label = el('span', 'room-name', entry.room)
-  li.append(label)
-
-  // 分离模式会连不同的服务器，光有房间名分不清，补一个小字标注
-  if (entry.server) {
-    const host = el('span', 'room-server', entry.server.replace(/^https?:\/\//, ''))
-    host.title = entry.server
-    li.append(host)
+  if (known) {
+    // 有 GM 密码 = 可编辑；只有加入密码 = 可访问。按缓存显示，切换时才真正复验
+    const tag = el('span', 'room-tag', known.gmPwd ? '可编辑' : '可访问')
+    tag.title = known.gmPwd ? '本机存有 GM 密码，可直接编辑' : '本机存有加入密码，可只读访问'
+    li.append(tag)
+    li.title = active ? '当前房间' : `切换到「${room}」`
+    li.addEventListener('click', () => {
+      if (active) return
+      void gm.onSwitchRoom(known).then((result) => {
+        if (result.ok) rerender()
+      })
+    })
+  } else {
+    li.title = '点击加入（需输入密码）'
+    li.addEventListener('click', () => {
+      openRoomDialog(ui, room)
+      rerender()
+    })
   }
+  return li
+}
 
-  const forget = el('button', 'room-forget', '✕') as HTMLButtonElement
-  forget.title = '忘记这个房间（只清本机缓存，不删服务器上的房间）'
-  forget.setAttribute('aria-label', `忘记房间 ${entry.room}`)
-  forget.addEventListener('click', (e) => {
+/** 本地房间一行：点整行进入，✕ 删除（本机数据） */
+function localRoomItem(name: string, gm: GmContext, rerender: Rerender): HTMLElement {
+  const active = gm.roomLocal && name === gm.roomName
+  const li = el('li', 'room-sidebar-item local')
+  if (active) li.classList.add('active')
+  li.append(el('span', 'room-name', name))
+  li.title = active ? '当前房间' : `进入本地房间「${name}」`
+
+  const del = el('button', 'room-forget', '✕') as HTMLButtonElement
+  del.title = '删除本地房间（本机数据，不可恢复）'
+  del.setAttribute('aria-label', `删除本地房间 ${name}`)
+  del.addEventListener('click', (e) => {
     e.stopPropagation()
-    gm.onForgetRoom(entry)
-    repaint()
+    if (!confirm(`删除本地房间「${name}」？所有进度钟将丢失。`)) return
+    const result = gm.onDeleteLocalRoom(name)
+    if (result.ok) rerender()
   })
-  li.append(forget)
+  li.append(del)
 
-  li.title = active ? '当前房间' : `切换到「${entry.room}」`
   li.addEventListener('click', () => {
     if (active) return
-    void gm.onSwitchRoom(entry).then((result) => {
-      // 失败原因由 main 侧统一 toast，这里只需在成功时收起侧边栏
-      if (result.ok) rerender()
-    })
+    const result = gm.onEnterLocalRoom(name)
+    if (result.ok) rerender()
   })
   return li
 }
