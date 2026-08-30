@@ -1408,6 +1408,15 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
 
 function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const aside = el('aside', 'room-sidebar')
+  // 手机端是全屏覆盖抽屉：右上角放「✕」关闭（桌面端常驻，此按钮隐藏）
+  const closeBtn = el('button', 'sidebar-close', '✕')
+  closeBtn.title = '关闭房间列表'
+  closeBtn.setAttribute('aria-label', '关闭房间列表')
+  closeBtn.addEventListener('click', () => {
+    ui.sidebarOpen = false
+    rerender()
+  })
+  aside.append(closeBtn)
 
   // 搜索框：纯前端过滤，不打服务器。输入时不走 rerender——否则输入框会失焦
   const search = makeInput('text', '搜索房间…', ui.sidebarQuery)

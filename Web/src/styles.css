@@ -781,6 +781,11 @@ body.drag-active {
   background: var(--bg);
 }
 
+/* 桌面端侧边栏常驻，不需要关闭按钮；手机端全屏覆盖时才显示（见媒体查询） */
+.sidebar-close {
+  display: none;
+}
+
 .room-sidebar-title {
   display: flex;
   justify-content: space-between;
@@ -1065,31 +1070,65 @@ body.drag-active {
 }
 
 @media (max-width: 640px) {
-  /* 手机：侧边栏改为顶部的横向滚动房间条（不隐藏，玩家手机也能看到房间） */
+  /* 手机窄屏：侧边栏不再做顶部横向滚动条（又窄又难点），改为全屏覆盖抽屉——
+     搜索 + 远程 + 本地都在一屏里从容操作，选中房间即自动收起 */
   .main-body {
     flex-direction: column;
   }
 
   .room-sidebar {
-    position: static;
-    flex: none;
+    position: fixed;
+    inset: 0;
+    z-index: 18; /* 盖住顶栏(10)与 FAB(15)，低于弹窗(20)——从侧边栏点「+」弹窗浮在抽屉之上 */
     width: 100%;
-    max-height: 130px;
-    padding: 8px 12px;
+    height: 100dvh;
+    max-height: none;
+    padding: 52px 16px 16px; /* 顶部让给关闭按钮 */
     border-right: none;
-    border-bottom: 1px solid var(--track);
+    animation: sidebar-in 0.18s ease-out;
   }
 
+  /* 抽屉从左侧滑入 */
+  @keyframes sidebar-in {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  .sidebar-close {
+    display: grid;
+    place-items: center;
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 16px;
+    cursor: pointer;
+  }
+
+  .sidebar-close:hover {
+    background: var(--field-bg);
+    color: var(--text);
+  }
+
+  /* 回到纵向列表：全屏抽屉里房间一行一行排，与桌面一致 */
   .room-sidebar-list {
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding-bottom: 4px;
+    display: block;
+    overflow: visible;
+    padding-bottom: 0;
   }
 
   .room-sidebar-item {
-    flex: 0 0 auto;
+    flex: none;
     white-space: nowrap;
-    background: var(--field-bg);
+    background: transparent;
   }
 }

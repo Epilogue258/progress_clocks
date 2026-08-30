@@ -285,9 +285,8 @@ const gm: GmContext = {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
   },
-  /** 新建房间（GitHub 模型：新开仓库并 push 本地状态） */
+  /** 新建远端房间（从空开始，不继承当前画布；内容靠手动 push / 提交上传） */
   onCreateRoom: async (room: string, joinPwd: string, gmPwd: string) => {
-    // 不确认 dirty：本地状态会被 push 进新房间，不丢东西
     try {
       await createRoom(API_BASE, room, joinPwd, gmPwd)
       enterRoom(room, joinPwd)
@@ -295,9 +294,11 @@ const gm: GmContext = {
       gmKey = gmPwd
       gmAuthed = true
       localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
-      // 不带 version，直接覆盖新房间的空状态；本地旧版本也不会再撞 409 假冲突
-      const version = await saveRoomState(API_BASE, room, gmPwd, store.pushState)
-      store.markSynced(version)
+      // 新房间从空开始：服务端建仓即空状态（version 0），本地画布也置空，两边对齐。
+      // 不再像旧版那样把当前画布一起 push 进新房间——想把已有内容搬进来，
+      // 走「提交本地房间」（选一份本地房间）或直接在空房里重做再保存。
+      store.replaceState(createEmptyState())
+      dirty = false
       rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
       rerender()
       syncPolling()
@@ -400,9 +401,10 @@ const gm: GmContext = {
   },
   /** 本地房间的来源远端（另存为本地 / 提交成功时记录），提交时优先一键回推 */
   getLocalOrigin: (name: string) => getLocalOrigin(name),
-  /** 新建本地房间：重名自动顺延 (2)；创建后直接进入 */
+  /** 新建本地房间：重名自动顺延 (2)；创建后直接进入（顺带收起侧边栏——手机抽屉选中即关） */
   onCreateLocalRoom: (name: string) => {
     enterLocalRoom(nextLocalName(name.trim() || '未命名房间'))
+    ui.sidebarOpen = false
     rerender()
     return { ok: true as const }
   },
@@ -417,9 +419,10 @@ const gm: GmContext = {
     }
     return { ok: true as const }
   },
-  /** 进入已有的本地房间（读它的状态槽，不联网） */
+  /** 进入已有的本地房间（读它的状态槽，不联网；收起侧边栏——手机抽屉选中即关） */
   onEnterLocalRoom: (name: string) => {
     enterLocalRoom(name)
+    ui.sidebarOpen = false
     rerender()
     return { ok: true as const }
   },
