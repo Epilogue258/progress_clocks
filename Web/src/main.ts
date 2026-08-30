@@ -449,49 +449,77 @@ function showToast(msg: string): void {
   setTimeout(() => toast.remove(), 3500)
 }
 
-// 变更防抖推送到 server（单写者全量覆盖；失败静默，下次变更重试）
+// 变更防抖推送到 server（push 默认覆盖；网络失败按退避重试，不静默丢掉改动）
 let pushTimer: number | undefined
+let retryTimer: number | undefined
+let retryDelay = 5000
+
+/** 排一次推送重试；已在等待中就不再排（避免每次改动叠一个定时器） */
+function scheduleRetryPush(): void {
+  if (retryTimer !== undefined) return
+  retryTimer = window.setTimeout(() => {
+    retryTimer = undefined
+    void pushNow()
+  }, retryDelay)
+  // 退避：服务器已下线时固定 5s 打下去只是空转
+  retryDelay = Math.min(retryDelay * 2, 60000)
+}
+
+/** 推送一次。成功清掉 dirty 并把退避重置回起点 */
+async function pushNow(): Promise<void> {
+  // dirty 已被清掉（退出房间等）就别推了，否则会把空状态推上去覆盖服务端
+  if (!dirty) return
+  try {
+    const version = await pushCurrent()
+    // 推送成功：更新同步基线（同一次轮询据此判断远端是否领先）
+    store.markSynced(version)
+    dirty = false
+    retryDelay = 5000
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
+      // Web 端推送已不带 version（见 store.pushState），走强制覆盖，自己撞不到这一支；
+      // 保留给仍带 version 的客户端（QQ Bot），以及将来恢复乐观锁的情形
+      try {
+        const remote = e.latest ?? (await pullCurrent())
+        store.replaceState(remote)
+        // 采用远端后本地与服务端同版本，算已同步；
+        // 不置 false 的话 dirty 会一直为真，轮询从此被 if (dirty) return 挡死
+        dirty = false
+        showToast('状态已在别处更新，已同步最新')
+        rerender()
+      } catch {
+        // 拉取失败静默
+      }
+    } else if (e instanceof ApiError && e.status === 401) {
+      // GM 密码失效：清除写权限并提示重新输入（加入密码错误则轮询静默，不影响只读）
+      gmAuthed = false
+      gmKey = null
+      if (roomName) {
+        localStorage.removeItem(ROOM_GM_STORAGE)
+      } else {
+        localStorage.removeItem(GM_KEY_STORAGE)
+      }
+      showToast(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
+      rerender()
+      syncPolling()
+    } else {
+      // 网络错误 / 服务器不可达：dirty 保持为真，排一次重试。
+      // 此前这里完全静默，于是这次改动唯一的第二次机会是「用户再改一次」——
+      // 而 GM 端是不轮询的（syncPolling 只给非 GM 起轮询），没有别的路径能把它推出去。
+      // 关掉页面更糟：本地数据还在，下次启动 bootstrapPull 会用服务端状态覆盖掉。
+      scheduleRetryPush()
+    }
+  }
+}
+
 store.subscribe((kind) => {
   // 显示顺序是本机的视图偏好，不是契约数据，不参与同步
   if (kind === 'order') return
   if (urlReadonly || !gmAuthed) return
   dirty = true
   window.clearTimeout(pushTimer)
-  pushTimer = window.setTimeout(async () => {
-    try {
-      const version = await pushCurrent()
-      // 推送成功：更新同步基线，避免下次操作（含撤销）携带旧版本触发假冲突
-      store.markSynced(version)
-      dirty = false
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
-        // Web 端推送已不带 version（见 store.pushState），走强制覆盖，自己撞不到这一支；
-        // 保留给仍带 version 的客户端（QQ Bot），以及将来恢复乐观锁的情形
-        try {
-          const remote = e.latest ?? (await pullCurrent())
-          store.replaceState(remote)
-          showToast('状态已在别处更新，已同步最新')
-          rerender()
-        } catch {
-          // 拉取失败静默
-        }
-      } else if (e instanceof ApiError && e.status === 401) {
-        // GM 密码失效：清除写权限并提示重新输入（加入密码错误则轮询静默，不影响只读）
-        gmAuthed = false
-        gmKey = null
-        if (roomName) {
-          localStorage.removeItem(ROOM_GM_STORAGE)
-        } else {
-          localStorage.removeItem(GM_KEY_STORAGE)
-        }
-        showToast(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
-        rerender()
-        syncPolling()
-      }
-      // 其他错误（网络等）静默
-    }
-  }, 500)
+  pushTimer = window.setTimeout(() => void pushNow(), 500)
 })
 
 // 启动：拉取 server 状态（server 为权威；失败保持本地数据并定时重试，server 重启后自动恢复）
