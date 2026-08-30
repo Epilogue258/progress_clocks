@@ -1069,6 +1069,26 @@ body.drag-active {
   color: var(--accent);
 }
 
+/* 提交弹窗内嵌房间列表：搜索 + 点击即上传的主交互面，限高滚动 */
+.push-rooms {
+  max-height: 220px;
+  overflow-y: auto;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+/* 提交弹窗「或推到一个新名字」行：名字 + 新房间 GM 密码 + 按钮 */
+.push-new-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.push-new-row .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
 @media (max-width: 640px) {
   /* 手机窄屏：侧边栏不再做顶部横向滚动条（又窄又难点），改为全屏覆盖抽屉——
      搜索 + 远程 + 本地都在一屏里从容操作，选中房间即自动收起 */

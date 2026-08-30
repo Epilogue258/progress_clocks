@@ -109,12 +109,11 @@ const ui: UiState = {
   localRoomDraft: '',
   localRoomError: '',
   pushLocalDialog: false,
-  pushLocalDraft: { target: '', joinPwd: '', gmPwd: '' },
+  pushLocalQuery: '',
   pushLocalSource: '',
   pushLocalError: '',
   pushLocalRooms: [],
   pushLocalLoading: false,
-  pushTargetTouched: false,
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -463,35 +462,43 @@ const gm: GmContext = {
   },
   /**
    * 提交本地房间 → 远端（GitHub 模型的 force push）：
-   * 目标房间不存在则新建并推送；已存在则先验证 GM 密码，通过后整体覆盖。
-   * 成功后记住远端来源，下次提交可一键回推。
+   * 目标不存在则新建并推送，已存在则整体覆盖。入口仅对 GM 可见，所以写凭证不再手输——
+   * 已有房间用缓存/当前登录的 GM 密码，新房间的 GM 密码由弹窗提供（新房间没既有凭证可复用）。
+   * 成功后记住远端来源，下次提交一键回推。
    */
-  onPushLocalRoom: async (name: string, target: string, joinPwd: string, gmPwd: string) => {
+  onPushLocalRoom: async (name: string, target: string, newGmPwd = '') => {
     const room = target.trim()
     if (!room) return { ok: false as const, error: '请填写目标房间名' }
-    if (gmPwd.length < 6) return { ok: false as const, error: 'GM 密码至少 6 位' }
     const state = loadLocalState(name)
+    // 已有房间的写凭证：本机缓存过 GM 密码就用它，否则退回当前登录凭证
+    const cached = loadKnownRooms().find((r) => r.server === API_BASE && r.room === room)
+    const pwd = newGmPwd || (cached && cached.gmPwd) || gmKey || ''
+    if (!pwd) return { ok: false as const, error: `没有「${room}」的 GM 密码，无法覆盖` }
     try {
-      try {
-        // 先试新建；重名会 409，走下面的覆盖分支
-        await createRoom(API_BASE, room, joinPwd, gmPwd)
-        await saveRoomStateForce(API_BASE, room, gmPwd, state)
-        showToast(`本地房间「${name}」已提交为新房间「${room}」`)
-      } catch (e) {
-        if (!(e instanceof ApiError && e.status === 409)) throw e
-        // 目标已存在：GM 密码对了才允许覆盖（密码即授权）
-        const verify = await verifyRoomKey(API_BASE, room, gmPwd)
-        if (verify !== 'ok') {
-          return { ok: false as const, error: verify === 'unauthorized' ? '目标房间已存在，GM 密码不正确' : '无法连接服务器' }
+      if (newGmPwd) {
+        // 推到一个新名字：先建仓（新房间公开，免加入密码）。重名 409 = 目标已存在，
+        // 当作覆盖处理，写凭证就是输入的这个密码
+        try {
+          await createRoom(API_BASE, room, '', newGmPwd)
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 409)) throw e
         }
-        await saveRoomStateForce(API_BASE, room, gmPwd, state)
-        showToast(`本地房间「${name}」已提交，覆盖了服务器上的「${room}」`)
       }
-      // 记住远端来源：下次提交直接预填目标，一键回推
-      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
+      // force push：新房间直接推刚建的空仓，已有房间整体覆盖
+      await saveRoomStateForce(API_BASE, room, pwd, state)
+      showToast(
+        newGmPwd
+          ? `本地房间「${name}」已发布为新房间「${room}」`
+          : `本地房间「${name}」已提交，覆盖了「${room}」`,
+      )
+      // 记住远端来源：下次提交直接高亮回推目标
+      rememberRoom({ server: API_BASE, room, joinPwd: '', gmPwd: pwd })
       rememberLocalRoom(name, { server: API_BASE, room })
       return { ok: true as const }
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        return { ok: false as const, error: `「${room}」的 GM 密码与本机不同，无法覆盖` }
+      }
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
   },
