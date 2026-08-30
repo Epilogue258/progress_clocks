@@ -41,13 +41,6 @@ export class Store {
   /** 最近交互的钟：数字键 1/2/3 批量填充的目标 */
   currentClockId: string | null = null
 
-  /**
-   * 与服务器同步的基线版本（乐观锁基准）。
-   * 本地操作（含撤销/重做）不改变它；仅 replaceState 与推送成功后更新——
-   * 否则撤销恢复旧快照会携带过期版本，触发 409 假冲突。
-   */
-  private syncedVersion: number
-
   /** 本地显示顺序（钟 id 的排列），仅本机有效，不参与同步 */
   order: string[]
 
@@ -57,7 +50,6 @@ export class Store {
 
   constructor() {
     this.state = load()
-    this.syncedVersion = this.state.version
     this.order = normalizeOrder(Object.keys(this.state.clocks), loadOrder())
     // 给旧数据补默认颜色（按创建顺序）
     let i = 0
@@ -98,14 +90,25 @@ export class Store {
     return true
   }
 
-  /** 推送用的状态快照：version 恒为同步基线（避免撤销等携带旧版本） */
-  get syncState(): ClockState {
-    return { ...this.state, version: this.syncedVersion }
+  /**
+   * 推送用的状态快照：不带 version。
+   *
+   * 推送是主动操作（用户改了钟 / 点了保存），按「多个客户端、一个作者」的假设
+   * 应当最后写入者胜——带上 version，会让刚在别处（Bot / 手机）动过同一房间的
+   * GM 反而撞上 409。服务端对 version 非数字的写入走强制覆盖路径。
+   * 409 分支保留给仍然带 version 的客户端（QQ Bot）。
+   */
+  get pushState(): ClockState {
+    const { version: _dropped, ...rest } = this.state
+    return rest as ClockState
   }
 
-  /** 推送成功回调：更新同步基线（服务器返回的新版本） */
+  /**
+   * 推送成功回调：记下服务端返回的新版本。
+   * 不再用于乐观锁，但仍必须记——轮询靠比对 version 决定要不要 replaceState，
+   * 本地版本落后服务端时会被判为「远端有更新」而替换，白白清掉撤销栈与选中态。
+   */
   markSynced(version: number): void {
-    this.syncedVersion = version
     this.state.version = version
     this.persist()
   }
@@ -113,7 +116,6 @@ export class Store {
   /** 用外部状态整体替换（server 拉取 / 数据导入）；清空撤销历史 */
   replaceState(next: ClockState): void {
     this.state = parseState(next)
-    this.syncedVersion = this.state.version
     this.undoStack = []
     this.redoStack = []
     this.currentClockId = null

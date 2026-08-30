@@ -254,8 +254,8 @@ const gm: GmContext = {
       gmKey = gmPwd
       gmAuthed = true
       localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
-      // 新房间初始 version=0：push 本地状态必须带 0，否则携带本地旧版本会触发 409 假冲突
-      const version = await saveRoomState(API_BASE, room, gmPwd, { ...store.syncState, version: 0 })
+      // 不带 version，直接覆盖新房间的空状态；本地旧版本也不会再撞 409 假冲突
+      const version = await saveRoomState(API_BASE, room, gmPwd, store.pushState)
       store.markSynced(version)
       rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
       rerender()
@@ -419,11 +419,14 @@ async function pullCurrent(): Promise<ClockState> {
   return roomName ? fetchRoomState(API_BASE, roomName, roomJoinPwd) : fetchState(API_BASE)
 }
 
-/** 推送当前状态（房间模式用 GM 密码，否则默认房间 + GM 密钥） */
+/**
+ * 推送当前状态（房间模式用 GM 密码，否则默认房间 + GM 密钥）。
+ * pushState 不带 version，服务端走强制覆盖：push 是主动操作，默认覆盖乐观锁。
+ */
 async function pushCurrent(): Promise<number> {
   return roomName
-    ? saveRoomState(API_BASE, roomName, gmKey ?? '', store.syncState)
-    : saveState(API_BASE, store.syncState, gmKey ?? undefined)
+    ? saveRoomState(API_BASE, roomName, gmKey ?? '', store.pushState)
+    : saveState(API_BASE, store.pushState, gmKey ?? undefined)
 }
 
 rerender()
@@ -463,6 +466,8 @@ store.subscribe((kind) => {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
+        // Web 端推送已不带 version（见 store.pushState），走强制覆盖，自己撞不到这一支；
+        // 保留给仍带 version 的客户端（QQ Bot），以及将来恢复乐观锁的情形
         try {
           const remote = e.latest ?? (await pullCurrent())
           store.replaceState(remote)
