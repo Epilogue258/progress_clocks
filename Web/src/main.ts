@@ -509,8 +509,10 @@ function startPolling(): void {
   pollingStop = pollState(
     API_BASE,
     (remote) => {
-      // GM 端尚有未推送成功的改动时不覆盖本地，防丢改动
-      if (gmAuthed && dirty) return
+      // 本地有未推送成功的改动时不覆盖，防丢改动。
+      // 只看 dirty，不看 gmAuthed：推送撞 401 时 gmAuthed 会被置 false 并重启轮询，
+      // 而那一刻恰恰是本地改动最需要保护的时候——带上 gmAuthed 反而撤掉了保护
+      if (dirty) return
       store.replaceState(remote)
       rerender()
     },
