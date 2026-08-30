@@ -110,6 +110,7 @@ const ui: UiState = {
   localRoomError: '',
   pushLocalDialog: false,
   pushLocalDraft: { target: '', joinPwd: '', gmPwd: '' },
+  pushLocalSource: '',
   pushLocalError: '',
   pushLocalRooms: [],
   pushLocalLoading: false,
@@ -491,6 +492,26 @@ const gm: GmContext = {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
   },
+  /**
+   * 另存为本地：把当前远端房间整体复制成一个本地房间（快照）。
+   * 断网后远端会失去写权限，或房间不是自己的却想借鉴时，都靠这份离线副本兜底。
+   * 复制不打断当前会话：仍留在远端房间，本地副本走侧边栏进。
+   */
+  onSaveAsLocal: () => {
+    if (!roomName || roomLocal) return { ok: false as const, error: '当前不是远端房间' }
+    const name = nextLocalName(roomName)
+    try {
+      // 与 Store.persist 同格式：JSON 原样落进新本地房间的状态槽
+      localStorage.setItem(localSlotKey(name), JSON.stringify(store.state))
+    } catch {
+      return { ok: false as const, error: '本机存储空间不足' }
+    }
+    // 记住来源远端：之后「提交本地房间」可直接一键回推
+    rememberLocalRoom(name, { server: API_BASE, room: roomName })
+    showToast(`已另存为本地「${name}」`)
+    rerender()
+    return { ok: true as const }
+  },
 }
 
 const rerender = () => render(root, store, ui, !canEdit(), rerender, gm)
@@ -774,7 +795,10 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (ui.moreMenuOpen) ui.moreMenuOpen = false
     else if (ui.shortcuts) ui.shortcuts = false
-    else if (ui.localRoomDialog) ui.localRoomDialog = false
+    else if (ui.pushLocalDialog) {
+      ui.pushLocalDialog = false
+      ui.pushLocalError = ''
+    } else if (ui.localRoomDialog) ui.localRoomDialog = false
     else if (ui.manageRoomDialog) {
       ui.manageRoomDialog = false
       ui.manageError = ''

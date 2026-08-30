@@ -71,6 +71,8 @@ export interface UiState {
   pushLocalDialog: boolean
   /** 提交弹窗草稿：目标房间名 / 加入密码 / GM 密码（报错重渲染时不丢） */
   pushLocalDraft: { target: string; joinPwd: string; gmPwd: string }
+  /** 提交弹窗选中的本地来源（本地房间里固定为当前房间；远端房间里可换） */
+  pushLocalSource: string
   /** 提交弹窗的提示文案 */
   pushLocalError: string
   /** 提交弹窗里的远端房间列表（供搜索选中；异步拉取，先置空再回填） */
@@ -169,6 +171,8 @@ export interface GmContext {
   getLocalOrigin: (name: string) => { server: string; room: string } | undefined
   /** 提交本地房间到远端（force push）：目标不存在则新建，存在则验证 GM 密码后覆盖 */
   onPushLocalRoom: (name: string, target: string, joinPwd: string, gmPwd: string) => Promise<RoomResult>
+  /** 另存为本地：当前远端房间整体复制为一个本地房间（快照，含来源记录） */
+  onSaveAsLocal: () => RoomResult
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -459,14 +463,27 @@ function renderMoreMenu(
     )
   }
 
-  // 提交本地房间：本地 → 远端 force push（只在本地房间里出现，远端房间本身就是同步的）
-  if (gm.roomLocal) {
+  // 另存为本地：把当前远端房间复制成本地快照（断网/借鉴时离线兜底），只在远端房间出现
+  if (gm.roomName && !gm.roomLocal) {
+    menu.append(
+      menuItem('另存为本地', () => {
+        ui.moreMenuOpen = false
+        gm.onSaveAsLocal()
+      }),
+    )
+  }
+
+  // 提交本地房间：本地 → 远端 force push。本地房间里来源固定；远端房间里也要能进——
+  // 在远端选「提交房间——提交哪个？搜索/点选」，让本地草稿推得到任意远端目标
+  if (gm.roomName) {
     menu.append(
       menuItem('提交本地房间', () => {
         ui.moreMenuOpen = false
         ui.pushLocalDialog = true
         ui.pushLocalError = ''
         ui.pushLocalDraft = { target: '', joinPwd: '', gmPwd: '' }
+        // 本地房间里来源就是当前房间；远端房间里默认取第一个本地房间
+        ui.pushLocalSource = gm.roomLocal ? gm.roomName : gm.localRooms[0] ?? ''
         ui.pushLocalRooms = []
         ui.pushLocalLoading = true
         ui.pushTargetTouched = false
@@ -529,6 +546,8 @@ function renderShortcutsModal(ui: UiState, rerender: Rerender): HTMLElement {
     ui.shortcuts = false
     rerender()
   })
+  // 说明弹窗没有左右布局：标题与按钮都居中
+  modal.classList.add('modal-center')
   for (const [key, desc] of SHORTCUTS) {
     const row = el('div', 'shortcut-row')
     row.append(el('kbd', 'shortcut-key', key), el('span', 'shortcut-desc', desc))
@@ -1247,22 +1266,18 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
   })
 
   const hint = el('div', 'gm-hint', ui.pushLocalError)
-  modal.append(hint, el('div', 'field', `来源：本地房间「${gm.roomName}」`))
-  modal.append(
-    el(
-      'div',
-      'field',
-      `目标服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
-    ),
-  )
 
-  // 有来源远端（提交成功 / 另存为本地 记录的）且指向当前服务器：一键回推，预填目标
-  const origin = gm.getLocalOrigin(gm.roomName)
-  const sameOrigin = origin && origin.server === gm.serverBase
+  // 来源：本地房间（要提交的那一份）。本地房间里固定为当前房间；远端房间里可换
+  const source = ui.pushLocalSource || gm.roomName
   const draft = ui.pushLocalDraft
-  // 预填默认目标：有同源来源就回推它，否则用本地房间名。同步进 draft——
-  // 不然显示的是默认值、提交拿到的却是空字符串
-  if (!draft.target) draft.target = sameOrigin ? origin!.room : gm.roomName
+  // 来源有远端记录（另存为本地 / 之前提交过）且指向当前服务器：一键回推
+  const origin = gm.getLocalOrigin(source)
+  const sameOrigin = origin && origin.server === gm.serverBase
+  // 预填默认目标：有同源来源就回推它；远端房间里默认推当前房间；否则用来源名。
+  // 同步进 draft——不然显示的是默认值、提交拿到的却是空字符串
+  if (!draft.target) {
+    draft.target = sameOrigin ? origin!.room : gm.roomLocal ? source : gm.roomName
+  }
   const targetInput = makeInput(
     'text',
     '目标房间名（可点下方已有房间，或直接输入新名字）',
@@ -1273,6 +1288,42 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
     draft.target = targetInput.value
     ui.pushTargetTouched = true
   })
+
+  // 换来源时重算默认目标：来源变了，一键回推的落点也要跟着变
+  const setSource = (name: string): void => {
+    ui.pushLocalSource = name
+    const o = gm.getLocalOrigin(name)
+    const tgt = o && o.server === gm.serverBase ? o.room : gm.roomName
+    draft.target = tgt
+    targetInput.value = tgt
+    ui.pushTargetTouched = false
+    rerender()
+  }
+
+  modal.append(hint, el('div', 'field', `来源：本地房间「${source}」`))
+
+  // 远端房间里没有隐含来源，给一个本地房间选择行（点选切换来源）
+  if (!gm.roomLocal) {
+    const srcList = el('div', 'push-room-list')
+    for (const name of gm.localRooms) {
+      const item = el('button', `push-room-item${name === source ? ' selected' : ''}`, name) as HTMLButtonElement
+      item.title = '点选为提交来源'
+      item.addEventListener('click', () => setSource(name))
+      srcList.append(item)
+    }
+    if (gm.localRooms.length === 0) {
+      srcList.append(el('div', 'gm-hint', '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建'))
+    }
+    modal.append(el('div', 'field', '要提交的本地房间'), srcList)
+  }
+
+  modal.append(
+    el(
+      'div',
+      'field',
+      `目标服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
+    ),
+  )
 
   // 已有房间列表：未编辑时显示全部，输入后按目标名过滤；点选填入目标
   const list = el('div', 'push-room-list')
@@ -1323,7 +1374,7 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
     busy = true
     submitBtn.disabled = true
     hint.textContent = '提交中…'
-    const result = await gm.onPushLocalRoom(gm.roomName, draft.target, draft.joinPwd.trim(), draft.gmPwd.trim())
+    const result = await gm.onPushLocalRoom(source, draft.target, draft.joinPwd.trim(), draft.gmPwd.trim())
     busy = false
     if (result.ok) close()
     else {
@@ -1392,13 +1443,17 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
       openRoomDialog(ui)
       rerender()
     })
-    const refresh = el('button', 'sidebar-refresh', '刷新')
+    // 刷新换成旋转箭头小图标（一眼可辨的刷新语义），放在新建左边，跟本地组一致：新建在最后
+    const refresh = el('button', 'sidebar-refresh')
     refresh.title = '重新拉取房间列表'
+    refresh.setAttribute('aria-label', '重新拉取房间列表')
+    refresh.innerHTML =
+      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>'
     refresh.addEventListener('click', () => {
       ui.sidebarRemoteOpen = true
       paint()
     })
-    remoteHeader.append(remoteAdd, refresh)
+    remoteHeader.append(refresh, remoteAdd)
     body.append(remoteHeader)
 
     if (ui.sidebarRemoteOpen) {

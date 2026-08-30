@@ -519,6 +519,15 @@ body.drag-active {
   font-weight: 800;
 }
 
+/* 说明类弹窗（快捷键）：没有左右布局，标题与按钮都居中 */
+.modal-center .modal-title {
+  text-align: center;
+}
+
+.modal-center .modal-actions {
+  justify-content: center;
+}
+
 .field {
   font-size: 13px;
   font-weight: 600;
@@ -966,6 +975,32 @@ body.drag-active {
   background: var(--field-bg);
 }
 
+/* 远端分组的刷新按钮：旋转箭头小图标，与「+」同一规格 */
+.sidebar-refresh {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.sidebar-refresh svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
+}
+
+.sidebar-refresh:hover {
+  color: var(--text);
+  background: var(--field-bg);
+}
+
 /* 远端房间访问标签：可编辑（有 GM 密码）> 可访问（只读） */
 .room-tag {
   flex: none;
@@ -1020,6 +1055,13 @@ body.drag-active {
 .push-room-item:hover {
   background: var(--field-bg);
   border-color: var(--accent);
+}
+
+/* 提交弹窗里选中的来源/目标高亮 */
+.push-room-item.selected {
+  border-color: var(--accent);
+  background: var(--field-bg);
+  color: var(--accent);
 }
 
 @media (max-width: 640px) {
