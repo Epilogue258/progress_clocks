@@ -998,6 +998,30 @@ body.drag-active {
   align-self: flex-end;
 }
 
+/* 「提交本地房间」弹窗：已有房间搜索选中列表 */
+.push-room-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.push-room-item {
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--track);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.push-room-item:hover {
+  background: var(--field-bg);
+  border-color: var(--accent);
+}
+
 @media (max-width: 640px) {
   /* 手机：侧边栏改为顶部的横向滚动房间条（不隐藏，玩家手机也能看到房间） */
   .main-body {

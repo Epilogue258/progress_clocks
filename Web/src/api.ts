@@ -141,6 +141,20 @@ export async function saveRoomState(
   return body.version ?? 0
 }
 
+/**
+ * 强制覆盖房间状态（需 GM 密码）：省略 version 字段，服务器视为强制覆盖、跳过乐观锁。
+ * 用于「提交本地房间」这类明确要整体替换远端数据的一键操作（GitHub 模型里的 force push）。
+ */
+export async function saveRoomStateForce(
+  baseUrl: string,
+  room: string,
+  gmPwd: string,
+  state: ClockState,
+): Promise<number> {
+  const { version: _ignored, ...rest } = state
+  return saveRoomState(baseUrl, room, gmPwd, rest as ClockState)
+}
+
 /** 验证 GM 密码是否有效（密码正确 = 该房间 GM，可写）。同样区分「不对」与「没问出结果」 */
 export async function verifyRoomKey(
   baseUrl: string,

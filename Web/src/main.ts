@@ -22,6 +22,7 @@ import {
   listRooms,
   pollState,
   saveRoomState,
+  saveRoomStateForce,
   verifyKey,
   verifyRoomKey,
   type VerifyResult,
@@ -30,7 +31,9 @@ import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './know
 import {
   clearLocalState,
   forgetLocalRoom,
+  getLocalOrigin,
   listLocalRooms,
+  loadLocalState,
   localSlotKey,
   nextLocalName,
   rememberLocalRoom,
@@ -105,6 +108,12 @@ const ui: UiState = {
   localRoomDialog: false,
   localRoomDraft: '',
   localRoomError: '',
+  pushLocalDialog: false,
+  pushLocalDraft: { target: '', joinPwd: '', gmPwd: '' },
+  pushLocalError: '',
+  pushLocalRooms: [],
+  pushLocalLoading: false,
+  pushTargetTouched: false,
 }
 
 // ---------- GM 鉴权状态 ----------
@@ -388,6 +397,8 @@ const gm: GmContext = {
   get localRooms() {
     return listLocalRooms()
   },
+  /** 本地房间的来源远端（另存为本地 / 提交成功时记录），提交时优先一键回推 */
+  getLocalOrigin: (name: string) => getLocalOrigin(name),
   /** 新建本地房间：重名自动顺延 (2)；创建后直接进入 */
   onCreateLocalRoom: (name: string) => {
     enterLocalRoom(nextLocalName(name.trim() || '未命名房间'))
@@ -445,6 +456,40 @@ const gm: GmContext = {
     }
     showToast('密码已更新')
     return { ok: true as const }
+  },
+  /**
+   * 提交本地房间 → 远端（GitHub 模型的 force push）：
+   * 目标房间不存在则新建并推送；已存在则先验证 GM 密码，通过后整体覆盖。
+   * 成功后记住远端来源，下次提交可一键回推。
+   */
+  onPushLocalRoom: async (name: string, target: string, joinPwd: string, gmPwd: string) => {
+    const room = target.trim()
+    if (!room) return { ok: false as const, error: '请填写目标房间名' }
+    if (gmPwd.length < 6) return { ok: false as const, error: 'GM 密码至少 6 位' }
+    const state = loadLocalState(name)
+    try {
+      try {
+        // 先试新建；重名会 409，走下面的覆盖分支
+        await createRoom(API_BASE, room, joinPwd, gmPwd)
+        await saveRoomStateForce(API_BASE, room, gmPwd, state)
+        showToast(`本地房间「${name}」已提交为新房间「${room}」`)
+      } catch (e) {
+        if (!(e instanceof ApiError && e.status === 409)) throw e
+        // 目标已存在：GM 密码对了才允许覆盖（密码即授权）
+        const verify = await verifyRoomKey(API_BASE, room, gmPwd)
+        if (verify !== 'ok') {
+          return { ok: false as const, error: verify === 'unauthorized' ? '目标房间已存在，GM 密码不正确' : '无法连接服务器' }
+        }
+        await saveRoomStateForce(API_BASE, room, gmPwd, state)
+        showToast(`本地房间「${name}」已提交，覆盖了服务器上的「${room}」`)
+      }
+      // 记住远端来源：下次提交直接预填目标，一键回推
+      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
+      rememberLocalRoom(name, { server: API_BASE, room })
+      return { ok: true as const }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
   },
 }
 
