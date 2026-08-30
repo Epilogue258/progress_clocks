@@ -41,7 +41,9 @@
 
 **技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。
 
-**代码规模**：`common` + `server` + `Web` 约 3200 行 TS（240 / 490 / 2500），另有约 940 行 CSS。Web 端约 2500 行（其中 `ui.ts` 约 1140 行，承担全部渲染与手势）。
+**代码在哪**：最主要的文件是 `Web/src/ui.ts`（全部渲染与手势），其余都是围绕它的工具文件
+——`main.ts` 编排同步与交互、`state.ts` 管状态与撤销栈、`api.ts` 封装 HTTP，`server/` 只是个可选的同步端。
+行数每次改动都在变，不在此记录。
 
 
 
