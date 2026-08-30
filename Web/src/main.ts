@@ -222,6 +222,9 @@ const gm: GmContext = {
       const remote = await fetchRoomState(API_BASE, room, joinPwd)
       enterRoom(room, joinPwd)
       store.replaceState(remote)
+      // 本地已被远端整体替换，此刻与服务端同版本——dirty 必须归零。
+      // 漏掉这一句，轮询会被 if (dirty) return 永久挡死，刚进的房间从此是个静止快照
+      dirty = false
       ui.sidebarOpen = false
       // 只有验证通过的 GM 密码才值得缓存；否则下次切换会被无声地当成玩家
       let effectiveGmPwd = ''
@@ -291,6 +294,8 @@ const gm: GmContext = {
       localStorage.setItem(API_BASE_STORAGE, API_BASE)
       enterRoom(entry.room, entry.joinPwd)
       store.replaceState(remote)
+      // 同加入房间：本地已被远端整体替换，dirty 归零，否则轮询永久停摆
+      dirty = false
       ui.sidebarOpen = false
       if (entry.gmPwd) {
         const result = await verifyRoomKey(API_BASE, entry.room, entry.gmPwd)
