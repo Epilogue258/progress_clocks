@@ -26,6 +26,7 @@ import {
   saveState,
   verifyKey,
   verifyRoomKey,
+  type VerifyResult,
 } from './api'
 import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './known-rooms'
 
@@ -106,16 +107,18 @@ function dropGmKey(): void {
 }
 
 /** 对着当前服务器校验凭证：房间模式验 GM 密码，默认房间验 GM_KEY */
-function checkGmKey(key: string): Promise<boolean> {
+function checkGmKey(key: string): Promise<VerifyResult> {
   return roomName ? verifyRoomKey(API_BASE, roomName, key) : verifyKey(API_BASE, key)
 }
 
 // 启动时验证本地已存的密钥是否仍有效
 if (!urlReadonly && gmKey) {
-  const okPromise = checkGmKey(gmKey)
-  okPromise.then((ok) => {
-    gmAuthed = ok
-    if (!ok) {
+  const verifyPromise = checkGmKey(gmKey)
+  verifyPromise.then((result) => {
+    gmAuthed = result === 'ok'
+    // 只有服务器明确说「凭证不对」才丢弃。连不上时保留：
+    // 离线打开远端房间必然校验失败，若据此清空，联网后还得重新输一遍密码
+    if (result === 'unauthorized') {
       gmKey = null
       dropGmKey()
     }
@@ -164,17 +167,21 @@ const gm: GmContext = {
     // 凭证：填了就验新的；没填但换了服务器，旧凭证要对着新服务器复验一次
     let error: string | null = null
     if (key) {
-      if (await checkGmKey(key)) {
+      const result = await checkGmKey(key)
+      if (result === 'ok') {
         gmKey = key
         gmAuthed = true
         persistGmKey(key)
-      } else {
+      } else if (result === 'unauthorized') {
         error = roomName ? 'GM 密码无效，请重试' : 'GM 密钥无效，请重试'
+      } else {
+        // 连不上时要说清楚是「没验成」，而不是指控用户的密钥不对
+        error = '无法连接服务器，凭证未验证'
       }
     } else if (serverChanged && gmKey) {
-      const still = await checkGmKey(gmKey)
-      gmAuthed = still
-      if (!still) {
+      const result = await checkGmKey(gmKey)
+      gmAuthed = result === 'ok'
+      if (result === 'unauthorized') {
         gmKey = null
         dropGmKey()
       }
@@ -219,14 +226,14 @@ const gm: GmContext = {
       // 只有验证通过的 GM 密码才值得缓存；否则下次切换会被无声地当成玩家
       let effectiveGmPwd = ''
       if (gmPwd) {
-        const ok = await verifyRoomKey(API_BASE, room, gmPwd)
-        if (ok) {
+        const result = await verifyRoomKey(API_BASE, room, gmPwd)
+        if (result === 'ok') {
           gmKey = gmPwd
           gmAuthed = true
           effectiveGmPwd = gmPwd
           localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
         } else {
-          showToast('GM 密码错误，已以只读身份进入')
+          showToast(result === 'unauthorized' ? 'GM 密码错误，已以只读身份进入' : '未能验证 GM 密码，已以只读身份进入')
         }
       }
       rememberRoom({ server: API_BASE, room, joinPwd, gmPwd: effectiveGmPwd })
@@ -286,11 +293,13 @@ const gm: GmContext = {
       store.replaceState(remote)
       ui.sidebarOpen = false
       if (entry.gmPwd) {
-        const ok = await verifyRoomKey(API_BASE, entry.room, entry.gmPwd)
+        const result = await verifyRoomKey(API_BASE, entry.room, entry.gmPwd)
         gmKey = entry.gmPwd
-        gmAuthed = ok
-        if (ok) localStorage.setItem(ROOM_GM_STORAGE, entry.gmPwd)
-        else localStorage.removeItem(ROOM_GM_STORAGE)
+        gmAuthed = result === 'ok'
+        if (result === 'ok') localStorage.setItem(ROOM_GM_STORAGE, entry.gmPwd)
+        // 没问出结果（连不上 / 服务端出错）时保留缓存的密码，下次切换还能再试；
+        // 只有服务器明确说不对才抹掉，免得一次抖动就丢掉凭证
+        else if (result === 'unauthorized') localStorage.removeItem(ROOM_GM_STORAGE)
       } else {
         gmKey = null
         gmAuthed = false
@@ -389,8 +398,11 @@ async function leaveRoom(): Promise<void> {
   gmKey = localStorage.getItem(GM_KEY_STORAGE)
   try {
     store.replaceState(await pullCurrent())
-    gmAuthed = gmKey ? await checkGmKey(gmKey) : false
-    if (gmKey && !gmAuthed) {
+    // 同上：只有服务器明确说不对才丢凭证。走到这里说明默认房间拉得到，
+    // 连不上会先被下面的 catch 接走
+    const result = gmKey ? await checkGmKey(gmKey) : ('unknown' as VerifyResult)
+    gmAuthed = result === 'ok'
+    if (result === 'unauthorized') {
       gmKey = null
       dropGmKey()
     }

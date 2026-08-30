@@ -56,13 +56,26 @@ export async function saveState(
   return body.version ?? 0
 }
 
-/** 验证 GM 密钥是否有效（成功返回 true） */
-export async function verifyKey(baseUrl: string, key: string): Promise<boolean> {
+/**
+ * 凭证校验结果。三种而不是两种：
+ * - `ok` 服务器确认有效
+ * - `unauthorized` 服务器明确拒绝（401）——凭证确实不对，可以丢掉
+ * - `unknown` 连不上，或服务端返回了 401 以外的错误——**没问出结果**
+ *
+ * 拆开 `unauthorized` 与 `unknown` 是必需的：合成一个布尔的话，
+ * 一次网络抖动就会让调用方把用户已保存的 GM 密码删掉，恢复后还得重新输一遍。
+ */
+export type VerifyResult = 'ok' | 'unauthorized' | 'unknown'
+
+/** 验证 GM 密钥是否有效（无法判定时返回 'unknown'，调用方据此决定要不要保留） */
+export async function verifyKey(baseUrl: string, key: string): Promise<VerifyResult> {
   try {
     const res = await fetch(`${baseUrl}/api/auth-check`, { headers: authHeaders(key) })
-    return res.ok
+    if (res.ok) return 'ok'
+    // 只有 401 能证明密钥不对；5xx 之类属于「没问出结果」，不该据此否定凭证
+    return res.status === 401 ? 'unauthorized' : 'unknown'
   } catch {
-    return false
+    return 'unknown'
   }
 }
 
@@ -128,15 +141,20 @@ export async function saveRoomState(
   return body.version ?? 0
 }
 
-/** 验证 GM 密码是否有效（密码正确 = 该房间 GM，可写） */
-export async function verifyRoomKey(baseUrl: string, room: string, gmPwd: string): Promise<boolean> {
+/** 验证 GM 密码是否有效（密码正确 = 该房间 GM，可写）。同样区分「不对」与「没问出结果」 */
+export async function verifyRoomKey(
+  baseUrl: string,
+  room: string,
+  gmPwd: string,
+): Promise<VerifyResult> {
   try {
     const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/auth-check`, {
       headers: roomHeaders(gmPwd),
     })
-    return res.ok
+    if (res.ok) return 'ok'
+    return res.status === 401 ? 'unauthorized' : 'unknown'
   } catch {
-    return false
+    return 'unknown'
   }
 }
 
