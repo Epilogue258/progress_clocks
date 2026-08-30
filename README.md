@@ -259,7 +259,8 @@ cd ../server && npm install && npm start
 写接口（POST）的请求体上限 1MB，超限返回 413 并带上明确原因（不断开连接，客户端可据此判断是重试还是数据有问题）。
 
 写外部插件（如 QQ Bot）前先跑 `python server/api-check.py`（详见 server/README.md）：默认只读、  
-可直接对线上服务器跑；`--full` 才改数据，且在自建临时房间内做完即删，不碰默认房间和已有房间。
+可直接对线上服务器跑；`--full` 才改数据，且在自建临时房间内做完即删，不碰默认房间和已有房间。  
+想抄一份「命令 → 调 API」的参考实现，看 `server/example_bot.py`——无框架、可被任意框架 import（详见 server/README.md）。
 
 ## 统一 JSON 契约（SchemaVersion 1，定义在 common/types.ts）
 
@@ -352,7 +353,6 @@ cd ../server && npm install && npm start
 - [ ] **dist 可双击打开**：`<script type="module">` 在 `file://` 下被 CORS 拦；要么单文件内联构建，要么彻底删掉「双击打开」的说法
 - [ ] **Apk 端**：目录已有最小 Compose 工程，实现画钟、点击+1/长按菜单、撤销重做、本地持久化（契约同 common/types.ts）、GM 登录、同步
 - [ ] **SSE 推送**（可选）：server 加 `GET /api/events`（状态变更推送），Web 玩家端 EventSource 订阅替代轮询，保留轮询 fallback
-- [ ] **QQ Bot 示例**：命令解析脚本（`/clock 2/4 名字`、`/clock show`、`/clock list`），调 API 的参考实现
 - [ ] **云部署**：学生云 + `GM_KEY` + 中文字体（`apt install fonts-noto-cjk`，否则导出图中文变方块）+ 可选反向代理
 - [ ] **写鉴权限流**（可选）：401 失败计数限速，防公网暴力尝试
 - [ ] **CORS 收紧**：现状 `Access-Control-Allow-Origin: *` 且放行 `Authorization` 头，公网暴露后任意站点可带密钥读写；改同源 + 白名单（详见 TODO.md）

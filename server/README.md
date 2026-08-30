@@ -93,6 +93,26 @@ state['clocks']['new-1'] = {'id': 'new-1', 'name': '警报', 'max': 4, 'fill': 1
 requests.post(f'{BASE}/api/state', json=state, headers=H)       # 写（需密钥）
 ```
 
+### 标准示例：无框架 Bot（example_bot.py）
+
+想要一个「不依赖任何 Bot 框架、可被任意框架调用」的参考实现？`example_bot.py` 就是：
+命令从外部输入读入（命令行参数或 stdin 一行），核心逻辑是普通函数 `handle_command()`，
+任何框架（QQ、飞书、IRC、cron…）都能 import 它、把收到的消息文本原样丢进去。
+只用标准库，无需 `pip install`。
+
+```bash
+# 命令行 / stdin 直接用
+python example_bot.py "clock 2/4 守卫" --room 龙与地下城 --key 你的GM密码
+echo "clock show" | python example_bot.py --room 龙与地下城 --join 玩家密码 --out /tmp/钟.png
+
+# 任意框架：import 即可复用（谁负责喂给它命令文本无所谓）
+from example_bot import handle_command
+ok, msg = handle_command("clock list", base="http://服务器:2333", room="龙与地下城", key="GM密码")
+```
+
+支持命令：`clock 2/4 名字`（注册/更新钟，同名更新）、`clock list`（列出）、`clock show`（列出 + 导出 PNG）。
+消息里的 `/clock` 前缀可带可不带。写命令需要 GM 密码（`--key`），读命令有加入密码（`--join`）即可。
+
 ## API 自检（写插件前先跑一遍）
 
 `api-check.py` 会照着契约把接口打一遍，确认「服务器活着 + 返回的形状对」。
