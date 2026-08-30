@@ -158,6 +158,24 @@ export async function verifyRoomKey(
   }
 }
 
+/** 修改房间密码（PATCH）：需 GM 密码；只改传了的字段（joinPwd / gmPwd） */
+export async function changeRoomPwd(
+  baseUrl: string,
+  room: string,
+  gmPwd: string,
+  patch: { joinPwd?: string; gmPwd?: string },
+): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...roomHeaders(gmPwd) },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new ApiError(res.status, body?.error ?? `修改密码失败: ${res.status}`)
+  }
+}
+
 /** 删除房间（需 GM 密码；不可恢复，调用方必须先确认） */
 export async function deleteRoom(baseUrl: string, room: string, gmPwd: string): Promise<void> {
   const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}`, {

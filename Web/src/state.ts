@@ -8,9 +8,9 @@ import {
   createEmptyState,
   parseState,
 } from '../../common/types'
-import { loadOrder, moveItem, normalizeOrder, saveOrder, sortByOrder } from './clock-order'
+import { ORDER_KEY, loadOrder, moveItem, normalizeOrder, saveOrder, sortByOrder } from './clock-order'
 
-const STORAGE_KEY = 'progress-clocks:state'
+export const STORAGE_KEY = 'progress-clocks:state'
 const UNDO_LIMIT = 100
 
 /**
@@ -26,9 +26,9 @@ export const PALETTE = [
   '#8e24aa', '#fdd835', '#00acc1', '#d81b60',
 ]
 
-function load(): ClockState {
+function loadFrom(key: string): ClockState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return createEmptyState()
     return parseState(JSON.parse(raw))
   } catch {
@@ -44,18 +44,32 @@ export class Store {
   /** 本地显示顺序（钟 id 的排列），仅本机有效，不参与同步 */
   order: string[]
 
+  /** 当前状态持久化到的槽位。切换槽位 = 换一份独立状态（本地房间各占一槽） */
+  private storageKey = STORAGE_KEY
+  private orderKey = ORDER_KEY
   private undoStack: ClockState[] = []
   private redoStack: ClockState[] = []
   private listeners = new Set<(kind: ChangeKind) => void>()
 
   constructor() {
-    this.state = load()
+    this.state = loadFrom(STORAGE_KEY)
     this.order = normalizeOrder(Object.keys(this.state.clocks), loadOrder())
     // 给旧数据补默认颜色（按创建顺序）
     let i = 0
     for (const clock of Object.values(this.state.clocks)) {
       if (!clock.color) clock.color = PALETTE[i++ % PALETTE.length]
     }
+  }
+
+  /**
+   * 切换到另一个存储槽（本地房间 / 空白工作区），从该槽加载状态。
+   * 撤销栈、选中态、显示顺序一并重置——槽与槽之间是彻底隔离的。
+   */
+  attachSlot(key: string): void {
+    this.storageKey = key
+    this.orderKey = `${key}:order`
+    this.order = []
+    this.replaceState(loadFrom(key))
   }
 
   /** 按本地顺序排列的钟（渲染用） */
@@ -70,7 +84,7 @@ export class Store {
   reorderClock(fromId: string, toIndex: number): void {
     const ids = this.visibleClocks.map((c) => c.id)
     this.order = normalizeOrder(ids, moveItem(ids, fromId, toIndex))
-    saveOrder(this.order)
+    saveOrder(this.order, this.orderKey)
     this.notify('order')
   }
 
@@ -172,7 +186,7 @@ export class Store {
 
   private persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state))
+      localStorage.setItem(this.storageKey, JSON.stringify(this.state))
     } catch {
       // 同上
     }

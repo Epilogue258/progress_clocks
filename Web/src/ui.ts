@@ -99,8 +99,10 @@ export interface GmContext {
   onLogout: () => void
   /** 当前生效的服务器地址（'' = 同源） */
   serverBase: string
-  /** 当前房间名（'' = 默认房间） */
+  /** 当前房间名（'' = 空白工作区） */
   roomName: string
+  /** 当前是否在本地房间（本地房间永远可编辑、永不联网） */
+  roomLocal: boolean
   /** 当前加入密码（'' = 公开房间） */
   roomJoinPwd: string
   /**
@@ -121,8 +123,14 @@ export interface GmContext {
   onForgetRoom: (entry: KnownRoom) => void
   /** 删除房间（需已登录 GM；不可恢复，调用方先确认） */
   onDeleteRoom: (room: string) => Promise<RoomResult>
-  /** 退出当前房间回到默认房间（服务器上的房间保留；本地未同步改动会丢，调用方先确认） */
+  /** 退出当前房间回到本地空白工作区（远端房间保留在服务器上；本地未同步改动会丢，调用方先确认） */
   onLeaveRoom: () => Promise<RoomResult>
+  /** 本机已建的本地房间列表 */
+  localRooms: string[]
+  /** 新建本地房间（重名自动顺延 (2)；创建后直接进入） */
+  onCreateLocalRoom: (name: string) => RoomResult
+  /** 删除本地房间（清注册表与状态槽；删的是当前房间则退回空白工作区） */
+  onDeleteLocalRoom: (name: string) => RoomResult
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------

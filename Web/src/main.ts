@@ -10,25 +10,30 @@
  * - server 不可达：保持本地 localStorage 数据，离线可用
  */
 import './styles.css'
-import { Store } from './state'
+import { Store, STORAGE_KEY } from './state'
 import { applyTheme, emptyRoomDraft, openRoomDialog, render, type GmContext, type UiState } from './ui'
 import type { ClockState } from '../../common/types'
-import { createEmptyState } from '../../common/types'
 import {
   ApiError,
   createRoom,
   deleteRoom,
   fetchRoomState,
-  fetchState,
   listRooms,
   pollState,
   saveRoomState,
-  saveState,
   verifyKey,
   verifyRoomKey,
   type VerifyResult,
 } from './api'
 import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './known-rooms'
+import {
+  clearLocalState,
+  forgetLocalRoom,
+  listLocalRooms,
+  localSlotKey,
+  nextLocalName,
+  rememberLocalRoom,
+} from './local-rooms'
 
 // server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
 // 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
@@ -54,9 +59,13 @@ const ROOM_STORAGE = 'pc-room-name'
 const ROOM_JOIN_STORAGE = 'pc-room-join'
 const ROOM_GM_STORAGE = 'pc-room-gm'
 const GM_KEY_STORAGE = 'pc-gm-key'
+const ROOM_TYPE_STORAGE = 'pc-room-type'
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
 
-let roomName = new URLSearchParams(location.search).get('room') ?? localStorage.getItem(ROOM_STORAGE) ?? ''
+// ?room= 是分享链接，指向的一定是远端房间；本地房间只按记忆恢复（不分享）
+const roomFromUrl = new URLSearchParams(location.search).get('room')
+let roomName = roomFromUrl ?? localStorage.getItem(ROOM_STORAGE) ?? ''
+let roomLocal = !roomFromUrl && localStorage.getItem(ROOM_TYPE_STORAGE) === 'local'
 let roomJoinPwd = localStorage.getItem(ROOM_JOIN_STORAGE) ?? ''
 
 const root = document.getElementById('app')!
@@ -96,6 +105,14 @@ let gmAuthed = roomName ? !!gmKey : false
 /** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
 let dirty = false
 
+/**
+ * 能否编辑眼前这份数据：本地房间 / 空白工作区永远可编辑；远端房间需 GM 凭证。
+ * 与 canPush 是两个独立的问题——「能不能改」不该由「能不能同步」决定。
+ */
+const canEdit = (): boolean => !urlReadonly && (roomName === '' || roomLocal || gmAuthed)
+/** 能否推送：只有远端房间且持有写凭证才会同步；本地与空白工作区不联网 */
+const canPush = (): boolean => roomName !== '' && !roomLocal && gmAuthed && !urlReadonly
+
 /** 记住 GM 凭证：房间模式存房间 GM 密码，默认房间存 GM_KEY */
 function persistGmKey(key: string): void {
   localStorage.setItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE, key)
@@ -106,8 +123,9 @@ function dropGmKey(): void {
   localStorage.removeItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE)
 }
 
-/** 对着当前服务器校验凭证：房间模式验 GM 密码，默认房间验 GM_KEY */
+/** 对着当前服务器校验凭证：远端房间验 GM 密码，空白工作区验 GM_KEY，本地房间无需凭证 */
 function checkGmKey(key: string): Promise<VerifyResult> {
+  if (roomLocal) return Promise.resolve('ok' as VerifyResult)
   return roomName ? verifyRoomKey(API_BASE, roomName, key) : verifyKey(API_BASE, key)
 }
 
@@ -331,7 +349,7 @@ const gm: GmContext = {
     forgetRoom(entry.server, entry.room)
     rerender()
   },
-  /** 删除房间（GM 密码已在登录态；删除后自动退回默认房间） */
+  /** 删除房间（GM 密码已在登录态；删除后自动退回空白工作区） */
   onDeleteRoom: async (room: string) => {
     try {
       await deleteRoom(API_BASE, room, gmKey ?? '')
@@ -340,27 +358,46 @@ const gm: GmContext = {
     }
     // 服务器上的房间没了，本机缓存里的这条也一并清掉
     forgetRoom(API_BASE, room)
-    await leaveRoom()
-    rerender()
-    syncPolling()
+    leaveRoom()
     showToast(`房间「${room}」已删除`)
     return { ok: true as const }
   },
-  /** 退出房间回到默认房间（服务器上的房间保留；未同步改动会丢，先确认） */
+  /** 退出当前房间，回到本地空白工作区（远端房间保留在服务器上） */
   onLeaveRoom: async () => {
     if (dirty && !confirm('本地有尚未同步到服务器的改动，退出房间将丢弃这些改动。继续？')) {
       return { ok: false as const, error: '已取消' }
     }
-    await leaveRoom()
-    dirty = false
+    leaveRoom()
+    return { ok: true as const }
+  },
+  /** 当前是否在本地房间（本地房间永远可编辑、永不联网） */
+  get roomLocal() {
+    return roomLocal
+  },
+  /** 本机已建的本地房间列表 */
+  get localRooms() {
+    return listLocalRooms()
+  },
+  /** 新建本地房间：重名自动顺延 (2)；创建后直接进入 */
+  onCreateLocalRoom: (name: string) => {
+    enterLocalRoom(nextLocalName(name.trim() || '未命名房间'))
     rerender()
-    syncPolling()
+    return { ok: true as const }
+  },
+  /** 删除本地房间：清注册表与状态槽；删的是当前房间则退回空白工作区 */
+  onDeleteLocalRoom: (name: string) => {
+    forgetLocalRoom(name)
+    clearLocalState(name)
+    if (roomName === name && roomLocal) {
+      leaveRoom()
+    } else {
+      rerender()
+    }
     return { ok: true as const }
   },
 }
 
-const rerender = () =>
-  render(root, store, ui, urlReadonly || !gmAuthed, rerender, gm)
+const rerender = () => render(root, store, ui, !canEdit(), rerender, gm)
 
 // ---------- 房间进入 / 同步上下文 ----------
 
@@ -371,76 +408,92 @@ const rerender = () =>
  */
 function enterRoom(room: string, joinPwd: string): void {
   roomName = room
+  roomLocal = false
   roomJoinPwd = joinPwd
   localStorage.setItem(ROOM_STORAGE, room)
   localStorage.setItem(ROOM_JOIN_STORAGE, joinPwd)
+  localStorage.setItem(ROOM_TYPE_STORAGE, 'remote')
+  // 承接远端数据的槽位是全局槽：从本地房间切过来要先复位，否则远端状态会被写进本地房间的槽
+  store.attachSlot(STORAGE_KEY)
   const params = new URLSearchParams(location.search)
   if (API_BASE) params.set('server', API_BASE)
   params.set('room', room)
   history.replaceState(null, '', `${location.pathname}?${params.toString()}`)
 }
 
-/**
- * 退出当前房间、回到默认房间（与 enterRoom 对偶）。
- * 加入房间是「pull 房间状态覆盖本地」，退出就是「pull 默认房间状态覆盖本地」——
- * 对称才不会留下半房间半默认的混合状态。
- *
- * 写凭证也要换手：房间的 GM 密码与默认房间的 GM_KEY（server 环境变量）不是一把锁，
- * 退出后得重新拿后者去验一遍，验不过就老实退回只读。
- * 拉不到默认房间时给空状态而不是卡住——退出不该被网络问题挡住。
- */
-async function leaveRoom(): Promise<void> {
-  roomName = ''
+/** 进入本地房间：换到该房间的状态槽，不联网、永远可编辑 */
+function enterLocalRoom(name: string): void {
+  roomName = name
+  roomLocal = true
   roomJoinPwd = ''
-  localStorage.removeItem(ROOM_STORAGE)
+  localStorage.setItem(ROOM_STORAGE, name)
   localStorage.removeItem(ROOM_JOIN_STORAGE)
-  localStorage.removeItem(ROOM_GM_STORAGE)
+  localStorage.setItem(ROOM_TYPE_STORAGE, 'local')
+  // 本地房间不写 ?room=（它是本地概念，分享无意义）
   const params = new URLSearchParams(location.search)
   params.delete('room')
   const qs = params.toString()
   history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
 
-  gmKey = localStorage.getItem(GM_KEY_STORAGE)
-  try {
-    store.replaceState(await pullCurrent())
-    // 同上：只有服务器明确说不对才丢凭证。走到这里说明默认房间拉得到，
-    // 连不上会先被下面的 catch 接走
-    const result = gmKey ? await checkGmKey(gmKey) : ('unknown' as VerifyResult)
-    gmAuthed = result === 'ok'
-    if (result === 'unauthorized') {
-      gmKey = null
-      dropGmKey()
-    }
-  } catch {
-    store.replaceState(createEmptyState())
-    gmAuthed = false
-    gmKey = null
-    showToast('无法连接服务器，已回到空的默认房间')
-  }
-}
-
-/** 拉取当前上下文状态（房间模式用加入密码拉取，否则默认房间） */
-async function pullCurrent(): Promise<ClockState> {
-  return roomName ? fetchRoomState(API_BASE, roomName, roomJoinPwd) : fetchState(API_BASE)
+  gmKey = null
+  gmAuthed = true
+  dirty = false
+  store.attachSlot(localSlotKey(name))
+  rememberLocalRoom(name)
+  syncPolling()
 }
 
 /**
- * 推送当前状态（房间模式用 GM 密码，否则默认房间 + GM 密钥）。
+ * 退出当前房间、回到本地空白工作区（与 enterRoom / enterLocalRoom 对偶）。
+ * 空白工作区是纯本地的：不联网、不拉默认房间，点侧边栏「本地 +」可新建本地房间继续干活。
+ * 写凭证一并清掉——远端房间的 GM 密码与空白工作区无关。
+ */
+function leaveRoom(): void {
+  roomName = ''
+  roomLocal = false
+  roomJoinPwd = ''
+  localStorage.removeItem(ROOM_STORAGE)
+  localStorage.removeItem(ROOM_JOIN_STORAGE)
+  localStorage.removeItem(ROOM_GM_STORAGE)
+  localStorage.removeItem(ROOM_TYPE_STORAGE)
+  const params = new URLSearchParams(location.search)
+  params.delete('room')
+  const qs = params.toString()
+  history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
+
+  gmKey = null
+  gmAuthed = false
+  dirty = false
+  store.attachSlot(STORAGE_KEY)
+  rerender()
+  syncPolling()
+}
+
+/** 拉取当前远端房间状态（仅在远端房间时调用；本地/空白工作区不联网） */
+async function pullCurrent(): Promise<ClockState> {
+  return fetchRoomState(API_BASE, roomName, roomJoinPwd)
+}
+
+/**
+ * 推送当前远端房间状态（用 GM 密码）。
  * pushState 不带 version，服务端走强制覆盖：push 是主动操作，默认覆盖乐观锁。
+ * 只有远端房间会推送——本地房间与空白工作区的改动是终点，不存在「待推送」。
  */
 async function pushCurrent(): Promise<number> {
-  return roomName
-    ? saveRoomState(API_BASE, roomName, gmKey ?? '', store.pushState)
-    : saveState(API_BASE, store.pushState, gmKey ?? undefined)
+  return saveRoomState(API_BASE, roomName, gmKey ?? '', store.pushState)
 }
 
 rerender()
 
-// 进入页判定：仅分离模式（配了 server）且还没进房间时弹窗选择/新建
-// 有 ?room= 时直接进入（公开房间免密；私有房间拉取 401 后由 bootstrapPull 弹窗）
-if (API_BASE !== '' && !roomName) {
-  openRoomDialog(ui)
+// 启动即本地工作区（目标架构：不强制进远端房间）：
+// - 本地房间：切到该房间的状态槽，不联网
+// - 远端房间：拉服务器状态（server 权威）
+// - 空白工作区：本地槽，什么都不做
+if (roomLocal) {
+  store.attachSlot(localSlotKey(roomName))
   rerender()
+} else if (roomName) {
+  void bootstrapPull()
 }
 
 // ---------- 同步层 ----------
@@ -521,7 +574,8 @@ async function pushNow(): Promise<void> {
 store.subscribe((kind) => {
   // 显示顺序是本机的视图偏好，不是契约数据，不参与同步
   if (kind === 'order') return
-  if (urlReadonly || !gmAuthed) return
+  // 只有远端房间且持有写凭证才推送；本地房间 / 空白工作区的改动由 Store 就地落盘，是终点
+  if (!canPush()) return
   dirty = true
   window.clearTimeout(pushTimer)
   pushTimer = window.setTimeout(() => void pushNow(), 500)
@@ -581,9 +635,9 @@ function stopPolling(): void {
   pollingStop = null
 }
 
-/** 按当前登录态重建轮询：GM 停，非 GM 起 */
+/** 按当前上下文重建轮询：本地 / 空白工作区不联网；远端房间 GM 靠推送停轮询、玩家轮询 */
 function syncPolling(): void {
-  if (gmAuthed) stopPolling()
+  if (roomName === '' || roomLocal || gmAuthed) stopPolling()
   else startPolling()
 }
 

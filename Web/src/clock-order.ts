@@ -5,11 +5,12 @@
  * 因此单独存一个 localStorage 键，不写进 ClockState——契约保持零改动。
  */
 
-const ORDER_KEY = 'progress-clocks:order'
+export const ORDER_KEY = 'progress-clocks:order'
 
-export function loadOrder(): string[] {
+/** 读取某槽位的显示顺序；key 省略 = 全局槽（默认房间/工作区） */
+export function loadOrder(key: string = ORDER_KEY): string[] {
   try {
-    const raw = localStorage.getItem(ORDER_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return []
     const parsed: unknown = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
@@ -18,9 +19,10 @@ export function loadOrder(): string[] {
   }
 }
 
-export function saveOrder(ids: string[]): void {
+/** 保存某槽位的显示顺序；key 省略 = 全局槽 */
+export function saveOrder(ids: string[], key: string = ORDER_KEY): void {
   try {
-    localStorage.setItem(ORDER_KEY, JSON.stringify(ids))
+    localStorage.setItem(key, JSON.stringify(ids))
   } catch {
     // 存储失败（隐私模式等）静默：顺序退化为「本次会话内有效」
   }
