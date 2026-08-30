@@ -525,6 +525,10 @@ function startPolling(): void {
       // 只看 dirty，不看 gmAuthed：推送撞 401 时 gmAuthed 会被置 false 并重启轮询，
       // 而那一刻恰恰是本地改动最需要保护的时候——带上 gmAuthed 反而撤掉了保护
       if (dirty) return
+      // 版本没变就整个跳过：replaceState() 会清空撤销栈并把当前钟选中态置空，
+      // 无条件每 5s 替换一次，等于每 5 秒把只读端刚点选中的钟取消掉（TODO-71af8dd5）。
+      // version 由服务端每次写入自增，因此「版本相同」即可认为内容相同。
+      if (remote.version === store.state.version) return
       store.replaceState(remote)
       rerender()
     },
