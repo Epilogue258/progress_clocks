@@ -177,6 +177,13 @@ export interface GmContext {
   onPushLocalRoom: (name: string, target: string) => Promise<RoomResult>
   /** 另存为本地：当前远端房间整体复制为一个本地房间（快照，含来源记录） */
   onSaveAsLocal: () => RoomResult
+  /**
+   * 连接状态（reachable / 重试中 / 离线），由轮询结果推导。
+   * 非 reachable 时写操作置灰、顶栏显示断线横幅；本地房间与空白工作区恒 reachable。
+   */
+  connState: 'reachable' | 'degraded' | 'down'
+  /** 手动「重试」：立刻发一次轮询请求并把退避重置（断线横幅上的按钮） */
+  onRetryNow: () => void
 }
 
 // ---------- 主题（深浅模式：跟随系统 + 手动切换） ----------
@@ -215,6 +222,10 @@ export function render(
 ): void {
   root.textContent = ''
   root.append(renderTopbar(store, ui, readonly, rerender, gm))
+  // 断线横幅：只在远端房间显示（本地房间 / 空白工作区不联网，无此状态）
+  if (gm.roomName && !gm.roomLocal && gm.connState !== 'reachable') {
+    root.append(renderConnBanner(gm, rerender))
+  }
   const body = el('div', 'main-body')
   if (ui.sidebarOpen) body.append(renderRoomSidebar(ui, gm, rerender))
   body.append(
@@ -260,6 +271,24 @@ export function render(
   if (ui.shortcuts) {
     root.append(renderShortcutsModal(ui, rerender))
   }
+}
+
+/** 断线横幅：重试中 / 离线提示 + 手动「重试」按钮（只由 render 在远端房间且非 reachable 时挂载） */
+function renderConnBanner(gm: GmContext, rerender: Rerender): HTMLElement {
+  const banner = el('div', `conn-banner ${gm.connState}`)
+  const label =
+    gm.connState === 'down'
+      ? '已离线——写操作已暂停，可用「更多 → 另存为本地」把当前内容存成本地草稿继续'
+      : '网络异常，正在重试——写操作已暂停'
+  banner.append(el('span', 'conn-banner-msg', label))
+  const retry = el('button', 'tbtn', '重试')
+  retry.title = '立即重试连接'
+  retry.addEventListener('click', () => {
+    gm.onRetryNow()
+    rerender()
+  })
+  banner.append(retry)
+  return banner
 }
 
 // ---------- 工具 ----------
@@ -371,8 +400,10 @@ function renderTopbar(
   })
   bar.append(viewBtn)
 
-  // 高频操作留在顶栏：撤销是 GM 改错后的第一反应，不该藏进菜单
-  if (!readonly) {
+  // 高频操作留在顶栏：撤销是 GM 改错后的第一反应，不该藏进菜单。
+  // 断线时也显示（新建置灰、撤销/重做按撤销栈）——写操作虽暂停，本地暂存仍可撤销/重做
+  const connDown = !!gm.roomName && !gm.roomLocal && gm.connState !== 'reachable'
+  if (!readonly || connDown) {
     const undoBtn = el('button', 'tbtn', '↶ 撤销') as HTMLButtonElement
     undoBtn.disabled = !store.canUndo
     undoBtn.title = '撤销（Ctrl+Z）'
@@ -389,8 +420,9 @@ function renderTopbar(
       rerender()
     })
 
-    const newBtn = el('button', 'tbtn primary', '＋ 新建')
+    const newBtn = el('button', 'tbtn primary', '＋ 新建') as HTMLButtonElement
     newBtn.title = '新建进度钟（Ctrl+N）'
+    newBtn.disabled = connDown // 断线时新建是写操作，置灰
     newBtn.addEventListener('click', () => {
       ui.creating = true
       rerender()
@@ -476,10 +508,10 @@ function renderMoreMenu(
     )
   }
 
-  // 提交本地房间：本地 → 远端 force push。提交是写入操作，入口只对 GM 可见。
+  // 提交本地房间：本地 → 远端 force push。提交是写入操作，入口只对 GM 可见（断线时一并隐藏）。
   // 目标语义：进入远端房间后目标即已确认（当前房间）；本地房间里才需要从列表选目标。
   // 新建远端房间不在这里：走侧边栏「+」，这里只推已有目标
-  if (gm.roomName && gm.authed && !gm.urlReadonly) {
+  if (gm.roomName && gm.authed && !gm.urlReadonly && gm.connState === 'reachable') {
     menu.append(
       menuItem('提交本地房间', () => {
         ui.moreMenuOpen = false
@@ -501,7 +533,8 @@ function renderMoreMenu(
     )
   }
 
-  if (!readonly) {
+  // 导出图是纯前端 SVG 渲染，不写契约数据——断线（readonly 由断线引起）时也保留
+  if (!readonly || gm.connState !== 'reachable') {
     menu.append(
       menuItem('导出 PNG', () => {
         ui.moreMenuOpen = false

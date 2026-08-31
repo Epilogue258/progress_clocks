@@ -126,10 +126,39 @@ let gmAuthed = roomName ? !!gmKey : false
 let dirty = false
 
 /**
- * 能否编辑眼前这份数据：本地房间 / 空白工作区永远可编辑；远端房间需 GM 凭证。
+ * 断线三阶段（README「断线的三阶段」）。连接状态完全由轮询结果推导，不做独立探活：
+ * 首次失败静默补一次快速重试（不提示不置灰）→ 仍失败进「重试中」（置灰写操作）
+ * → 再连续失败 3 次进「离线」（离线面板，只留另存为本地）→ 退避拉长 + 手动「重试」。
+ * 本地房间与空白工作区不联网、不轮询，此状态恒为 reachable，不受影响。
+ */
+type ConnState = 'reachable' | 'degraded' | 'down'
+let connState: ConnState = 'reachable'
+let silentFail = false // 首次失败后等快速重试；补的那一次不计入离线判定的失败次数
+let degradedFails = 0 // 进入「重试中」后的连续失败次数（≥3 → 离线）
+let pollDelay = 5000
+
+/**
+ * 任一请求成功（轮询 / 推送 / 启动拉取）都复位断线状态并给一次可见反馈——
+ * 静默恢复等于没恢复，用户不知道什么时候能继续编辑。
+ */
+function markReachable(): void {
+  if (connState !== 'reachable') {
+    connState = 'reachable'
+    silentFail = false
+    degradedFails = 0
+    pollDelay = 5000
+    showToast('已重新连接')
+    rerender()
+  }
+}
+
+/**
+ * 能否编辑眼前这份数据：本地房间 / 空白工作区永远可编辑；远端房间需 GM 凭证且在线。
+ * 断线时（有凭证但连不上服务器）写操作一并置灰——push 不出去，改了也只是改本地暂存。
  * 与 canPush 是两个独立的问题——「能不能改」不该由「能不能同步」决定。
  */
-const canEdit = (): boolean => !urlReadonly && (roomName === '' || roomLocal || gmAuthed)
+const canEdit = (): boolean =>
+  !urlReadonly && (roomName === '' || roomLocal || (gmAuthed && connState === 'reachable'))
 /** 能否推送：只有远端房间且持有写凭证才会同步；本地与空白工作区不联网 */
 const canPush = (): boolean => roomName !== '' && !roomLocal && gmAuthed && !urlReadonly
 
@@ -588,6 +617,14 @@ const gm: GmContext = {
     rerender()
     return { ok: true as const }
   },
+  /** 连接状态（reachable / 重试中 / 离线），由轮询结果推导；本地房间与空白工作区恒 reachable */
+  get connState() {
+    return connState
+  },
+  /** 手动「重试」：立刻发一次轮询请求并把退避重置回起点（断线横幅上的按钮） */
+  get onRetryNow() {
+    return onRetryNow
+  },
 }
 
 const rerender = () => render(root, store, ui, !canEdit(), rerender, gm)
@@ -727,10 +764,11 @@ async function pushNow(): Promise<void> {
   if (!dirty) return
   try {
     const version = await pushCurrent()
-    // 推送成功：更新同步基线（同一次轮询据此判断远端是否领先）
+    // 推送成功：更新同步基线（同一次轮询据此判断远端是否领先），并复位断线状态
     store.markSynced(version)
     dirty = false
     retryDelay = 5000
+    markReachable()
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {
       // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
@@ -760,10 +798,11 @@ async function pushNow(): Promise<void> {
       rerender()
       syncPolling()
     } else {
-      // 网络错误 / 服务器不可达：dirty 保持为真，排一次重试。
+      // 网络错误 / 服务器不可达：dirty 保持为真，排一次重试，并进入断线状态机（置灰 + 横幅）。
       // 此前这里完全静默，于是这次改动唯一的第二次机会是「用户再改一次」——
       // 而 GM 端是不轮询的（syncPolling 只给非 GM 起轮询），没有别的路径能把它推出去。
       // 关掉页面更糟：本地数据还在，下次启动 bootstrapPull 会用服务端状态覆盖掉。
+      onPollError(e)
       scheduleRetryPush()
     }
   }
@@ -784,6 +823,7 @@ async function bootstrapPull(): Promise<void> {
   try {
     const remote = await pullCurrent()
     store.replaceState(remote)
+    markReachable()
     rerender()
   } catch (e) {
     if (e instanceof ApiError && e.status === 401 && roomName) {
@@ -793,7 +833,8 @@ async function bootstrapPull(): Promise<void> {
       openRoomDialog(ui)
       rerender()
     } else {
-      // 离线 / server 刚重启：5s 后重试；成功前本地数据可用
+      // 离线 / server 刚重启：进断线状态机（置灰 + 横幅），5s 后重试；成功前本地数据可用
+      onPollError(e)
       setTimeout(() => void bootstrapPull(), 5000)
     }
   }
@@ -806,25 +847,81 @@ void bootstrapPull()
 // GM 端自身靠推送，不轮询；登录态或房间/服务器变化时重建，避免沿用旧的 room 与密码。
 let pollingStop: (() => void) | null = null
 
+/**
+ * 轮询成功回调：复位断线状态 + 原同步逻辑。
+ * 断线中恢复成功给一次可见反馈（静默恢复等于没恢复）；reachable 下的正常成功静默。
+ */
+function onPollUpdate(remote: ClockState): void {
+  markReachable()
+  // 本地有未推送成功的改动时不覆盖，防丢改动。
+  // 只看 dirty，不看 gmAuthed：推送撞 401 时 gmAuthed 会被置 false 并重启轮询，
+  // 而那一刻恰恰是本地改动最需要保护的时候——带上 gmAuthed 反而撤掉了保护
+  if (dirty) return
+  // 版本没变就整个跳过：replaceState() 会清空撤销栈并把当前钟选中态置空，
+  // 无条件每 5s 替换一次，等于每 5 秒把只读端刚点选中的钟取消掉（TODO-71af8dd5）。
+  // version 由服务端每次写入自增，因此「版本相同」即可认为内容相同。
+  if (remote.version === store.state.version) return
+  store.replaceState(remote)
+  rerender()
+}
+
+/** 轮询失败回调：401（加入密码错）弹重输；网络异常走断线三阶段 */
+function onPollError(e: unknown): void {
+  if (e instanceof ApiError && e.status === 401) {
+    // 加入密码错误：停轮询，弹连接弹窗重新输入（与 bootstrapPull 一致），不要无限重试
+    stopPolling()
+    openRoomDialog(ui)
+    rerender()
+    return
+  }
+  if (connState === 'reachable') {
+    if (!silentFail) {
+      // 首次失败：静默补一次快速重试（下一个 tick 用 100ms），不提示、不置灰
+      silentFail = true
+      pollDelay = 100
+    } else {
+      // 补的快速重试也失败：进「重试中」，置灰写操作
+      connState = 'degraded'
+      degradedFails = 1
+      pollDelay = 5000
+      silentFail = false
+    }
+  } else if (connState === 'degraded') {
+    degradedFails++
+    pollDelay = Math.min(pollDelay * 2, 60000) // 5s → 10s → 20s → 40s → 60s
+    if (degradedFails >= 3) connState = 'down'
+  }
+  // down 后继续失败保持 60s 上限（pollDelay 已在 degraded 阶段拉满），不再变化
+  rerender()
+}
+
+/** 手动「重试」：立刻发一次请求并把退避重置回起点（覆盖「网络已恢复但不想等退避」的情况） */
+function onRetryNow(): void {
+  pollDelay = 5000
+  void (async () => {
+    try {
+      const remote = await fetchRoomState(API_BASE, roomName, roomJoinPwd)
+      onPollUpdate(remote)
+    } catch (err) {
+      onPollError(err)
+    }
+  })()
+}
+
 function startPolling(): void {
   pollingStop?.()
+  // 新上下文（进房间 / 换服务器 / 重新登录）重置连接状态
+  connState = 'reachable'
+  silentFail = false
+  degradedFails = 0
+  pollDelay = 5000
   pollingStop = pollState(
     API_BASE,
-    (remote) => {
-      // 本地有未推送成功的改动时不覆盖，防丢改动。
-      // 只看 dirty，不看 gmAuthed：推送撞 401 时 gmAuthed 会被置 false 并重启轮询，
-      // 而那一刻恰恰是本地改动最需要保护的时候——带上 gmAuthed 反而撤掉了保护
-      if (dirty) return
-      // 版本没变就整个跳过：replaceState() 会清空撤销栈并把当前钟选中态置空，
-      // 无条件每 5s 替换一次，等于每 5 秒把只读端刚点选中的钟取消掉（TODO-71af8dd5）。
-      // version 由服务端每次写入自增，因此「版本相同」即可认为内容相同。
-      if (remote.version === store.state.version) return
-      store.replaceState(remote)
-      rerender()
-    },
-    5000,
+    onPollUpdate,
+    () => (silentFail ? 100 : connState === 'reachable' ? 5000 : pollDelay),
     roomName,
     roomJoinPwd,
+    onPollError,
   )
 }
 

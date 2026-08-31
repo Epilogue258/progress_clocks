@@ -220,27 +220,38 @@ export async function renameRoom(
   }
 }
 
-/** 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事 */
+/**
+ * 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事。
+ * - intervalMs 可传函数：返回「下一次轮询」的间隔，供断线退避逐步拉长
+ * - onError：把失败（网络异常 / 401）交给上层，由上层决定是静默快速重试、置灰还是弹重输
+ */
 export function pollState(
   baseUrl: string,
   onUpdate: (state: ClockState) => void,
-  intervalMs: number = 5000,
+  intervalMs: number | (() => number) = 5000,
   room?: string,
   pwd?: string,
+  onError?: (err: unknown) => void,
 ): () => void {
   let stopped = false
-  const tick = async () => {
+  let timer: number | undefined
+  const schedule = (): void => {
+    if (stopped) return
+    const delay = typeof intervalMs === 'function' ? intervalMs() : intervalMs
+    timer = window.setTimeout(tick, delay)
+  }
+  const tick = async (): Promise<void> => {
     if (stopped) return
     try {
       onUpdate(await (room ? fetchRoomState(baseUrl, room, pwd ?? '') : fetchState(baseUrl)))
-    } catch {
-      // 网络错误静默，下次轮询重试
+    } catch (e) {
+      onError?.(e)
     }
+    schedule()
   }
   void tick()
-  const timer = setInterval(tick, intervalMs)
   return () => {
     stopped = true
-    clearInterval(timer)
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
