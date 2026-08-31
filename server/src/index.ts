@@ -23,7 +23,7 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildExportSvg } from '../../common/export-svg.ts'
-import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, saveState, updateRoomMeta } from './store.ts'
+import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, renameRoom, saveState, updateRoomMeta } from './store.ts'
 import { renderPng } from './render.ts'
 
 // 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
@@ -50,8 +50,8 @@ function checkAuth(req: IncomingMessage): boolean {
 /** 房间路由解析：/api/room/<name>/<action>（action 可省略 = 删除），非法路径或非法编码返回 null */
 function parseRoomPath(
   pathname: string,
-): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'delete' } | null {
-  const m = /^\/api\/room\/([^/]+)(?:\/(state|export\.png|export\.svg|auth-check))?$/.exec(pathname)
+): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'rename' | 'delete' } | null {
+  const m = /^\/api\/room\/([^/]+)(?:\/(state|export\.png|export\.svg|auth-check|rename))?$/.exec(pathname)
   if (!m) return null
   let room: string
   try {
@@ -60,7 +60,7 @@ function parseRoomPath(
     // 非法 UTF-8 编码：直接拒绝（落到静态托管 404，不抛 500）
     return null
   }
-  return { room, action: (m[2] ?? 'delete') as 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'delete' }
+  return { room, action: (m[2] ?? 'delete') as 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'rename' | 'delete' }
 }
 
 /** 解析并保存状态（默认房间或命名房间）：JSON 解析 + 乐观锁 + 冲突响应 */
@@ -279,6 +279,43 @@ const server = createServer(async (req, res) => {
         }
         deleteRoom(room)
         json(res, 200, { ok: true })
+        return
+      }
+      // 重命名房间：需 GM 密码；新名字冲突 409；改名后旧名字立即 404（玩家需换新仓库）
+      if (action === 'rename') {
+        if (req.method !== 'POST') {
+          json(res, 405, { ok: false, error: '方法不允许' })
+          return
+        }
+        if (bearer !== `Bearer ${meta.gmPwd}`) {
+          json(res, 401, { ok: false, error: '未授权：需要 GM 密码' })
+          return
+        }
+        const body = await readBody(req)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(body)
+        } catch {
+          json(res, 400, { ok: false, error: 'JSON 解析失败' })
+          return
+        }
+        const newName = ((parsed as Record<string, unknown>)?.name as string | undefined)?.trim() ?? ''
+        if (!newName) {
+          json(res, 400, { ok: false, error: '缺少新房间名（name）' })
+          return
+        }
+        const result = renameRoom(room, newName)
+        if (!result.ok) {
+          if (result.reason === 'exists') {
+            json(res, 409, { ok: false, error: '新房间名已存在' })
+          } else if (result.reason === 'invalid-name') {
+            json(res, 400, { ok: false, error: '非法房间名：不能含 / \ 或 Windows 保留字符，1-32 字符' })
+          } else {
+            json(res, 404, { ok: false, error: '房间不存在' })
+          }
+          return
+        }
+        json(res, 200, { ok: true, room: result.room })
         return
       }
       // GM 密码验证（写权限确认，GM 登录用）

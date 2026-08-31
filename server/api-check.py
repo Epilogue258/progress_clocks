@@ -408,6 +408,40 @@ def room_lifecycle(rep: Report, base: str, args) -> None:
             new_auth = request(base, 'GET', f'/api/room/{qname}/auth-check', token=new_gm, timeout=args.timeout)
             rep.expect('新 GM 密码可验证（200）', new_auth.status == 200, f'实际 {new_auth.status}')
             gm_pwd = new_gm
+
+        # ---- 重命名房间（POST /api/room/<name>/rename，对外 API，需 GM 密码） ----
+        conflict_name = f'{name}-重名'
+        conflict = request(base, 'POST', '/api/rooms',
+                           payload={'name': conflict_name, 'joinPwd': '', 'gmPwd': 'conflict-gm-123'},
+                           timeout=args.timeout)
+        rep.expect('建重名目标房间', conflict.status == 200, f'实际 {conflict.status}')
+        conf_q = urllib.parse.quote(conflict_name, safe='')
+        rename_url = f'/api/room/{qname}/rename'
+        dup = request(base, 'POST', rename_url, token=gm_pwd,
+                      payload={'name': conflict_name}, timeout=args.timeout)
+        rep.expect('改名到已存在名字返回 409', dup.status == 409, f'实际 {dup.status}')
+        bad_name = request(base, 'POST', rename_url, token=gm_pwd,
+                           payload={'name': 'a/b'}, timeout=args.timeout)
+        rep.expect('非法新名字返回 400', bad_name.status == 400, f'实际 {bad_name.status}')
+        unauth = request(base, 'POST', rename_url, token=gm_pwd + 'x',
+                         payload={'name': f'{name}-改'}, timeout=args.timeout)
+        rep.expect('错误 GM 密码改名返回 401', unauth.status == 401, f'实际 {unauth.status}')
+
+        # 正常改名：状态（含 version）原样保留，旧名字 404；清理沿用新名字
+        before = request(base, 'GET', state_url, token=read_token, timeout=args.timeout).json()
+        new_name = f'{name}-改'
+        new_q = urllib.parse.quote(new_name, safe='')
+        renamed = request(base, 'POST', rename_url, token=gm_pwd,
+                          payload={'name': new_name}, timeout=args.timeout)
+        if rep.expect('POST rename 返回 200', renamed.status == 200, f'{renamed.status} {renamed.text[:120]}'):
+            after = request(base, 'GET', f'/api/room/{new_q}/state', token=read_token, timeout=args.timeout).json()
+            rep.expect('改名后状态一致（含 version）', after == before,
+                       '' if after == before else (json.dumps(after, ensure_ascii=False)[:80]))
+            gone = request(base, 'GET', f'/api/room/{qname}/state', token=read_token, timeout=args.timeout)
+            rep.expect('旧名字不可访问（404）', gone.status == 404, f'实际 {gone.status}')
+            name, qname = new_name, new_q
+        del_conf = request(base, 'DELETE', f'/api/room/{conf_q}', token='conflict-gm-123', timeout=args.timeout)
+        rep.expect('清理重名目标房间', del_conf.status == 200, f'实际 {del_conf.status}')
     finally:
         deleted = request(base, 'DELETE', f'/api/room/{qname}', token=gm_pwd, timeout=args.timeout)
         rep.expect('清理临时房间', deleted.status == 200, f'实际 {deleted.status}')

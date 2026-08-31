@@ -38,6 +38,7 @@ cd ../server && npm install && npm start
 | GET | `/api/room/<name>/auth-check` | GM 密码验证（写权限确认） |
 | PATCH | `/api/room/<name>` | 修改房间密码（需 GM 密码；body `{ joinPwd?, gmPwd? }`，只改传了的字段，gmPwd 传了须 ≥6 位） |
 | DELETE | `/api/room/<name>` | 删除房间（需 GM 密码；不可恢复） |
+| POST | `/api/room/<name>/rename` | 重命名房间（需 GM 密码；body `{ name }`，内容与密码原样保留，旧名立即 404——玩家需换新仓库） |
 
 ```bash
 # 修改房间密码（对外 API，QQ Bot 等外部插件也可调用；只改传了的字段）

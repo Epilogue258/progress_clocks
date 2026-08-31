@@ -120,6 +120,29 @@ export function deleteRoom(name: string): boolean {
   return true
 }
 
+export type RenameRoomResult =
+  | { ok: true; room: RoomMeta }
+  | { ok: false; reason: 'not-found' | 'invalid-name' | 'exists' }
+
+/**
+ * 重命名房间：整个目录原子改名（同盘 rename），状态与密码原样保留，只更新 meta.name。
+ * 新名字与既有房间冲突返回 exists（409）。改名后旧名字立即 404——调用方需让玩家换新仓库。
+ */
+export function renameRoom(name: string, newName: string): RenameRoomResult {
+  if (!isValidRoomName(newName)) return { ok: false, reason: 'invalid-name' }
+  if (!isValidRoomName(name)) return { ok: false, reason: 'not-found' }
+  const src = join(ROOMS_DIR, name)
+  if (!existsSync(src)) return { ok: false, reason: 'not-found' }
+  const dst = join(ROOMS_DIR, newName)
+  if (existsSync(dst)) return { ok: false, reason: 'exists' }
+  renameSync(src, dst)
+  const metaFile = roomMetaFile(newName)
+  const meta = JSON.parse(readFileSync(metaFile, 'utf-8')) as RoomMeta
+  meta.name = newName
+  writeFileSync(metaFile, JSON.stringify(meta, null, 2), 'utf-8')
+  return { ok: true, room: meta }
+}
+
 /** 读取房间元数据（含密码）；不存在或非法名返回 null */
 export function loadRoomMeta(name: string): RoomMeta | null {
   if (!isValidRoomName(name)) return null
