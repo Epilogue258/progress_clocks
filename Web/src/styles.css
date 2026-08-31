@@ -1028,21 +1028,7 @@ body.drag-active {
   opacity: 0.85;
 }
 
-/* 房间管理弹窗里「保存更改（改密码）」展开区 */
-.change-pwd {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--track);
-}
-
-.change-pwd .tbtn {
-  align-self: flex-end;
-}
-
-/* 内嵌房间选择器：搜索栏 + 内嵌 box（提交本地房间弹窗里来源与目标各一个） */
+/* 内嵌房间选择器：搜索栏 + 内嵌 box（提交本地房间弹窗的目标列表） */
 .room-picker {
   display: flex;
   flex-direction: column;
@@ -1100,16 +1086,31 @@ body.drag-active {
   color: var(--accent);
 }
 
-/* 提交弹窗「或推到一个新名字」行：名字 + 新房间 GM 密码 + 按钮 */
-.push-new-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 2px;
+/* 红底错误：操作失败（密码错 / 冲突 / 网络错误），空时隐藏不参与布局 */
+.gm-error:empty,
+.gm-warn:empty {
+  display: none;
 }
 
-.push-new-row .text-input {
-  flex: 1;
-  min-width: 0;
+.gm-error {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger);
+}
+
+/* 黄框警告：可恢复的提示（如名字已被占用，保存会被拒绝），与红底错误区分 */
+.gm-warn {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #f0b429 14%, transparent);
+  border: 1px solid color-mix(in srgb, #f0b429 50%, transparent);
+  color: color-mix(in srgb, #f0b429 70%, var(--text));
 }
 
 @media (max-width: 640px) {

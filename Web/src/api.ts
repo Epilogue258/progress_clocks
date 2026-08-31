@@ -202,6 +202,24 @@ export async function deleteRoom(baseUrl: string, room: string, gmPwd: string): 
   }
 }
 
+/** 重命名房间（POST /api/room/<name>/rename）：需 GM 密码；内容与密码原样保留，旧名立即 404 */
+export async function renameRoom(
+  baseUrl: string,
+  room: string,
+  gmPwd: string,
+  newName: string,
+): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...roomHeaders(gmPwd) },
+    body: JSON.stringify({ name: newName }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new ApiError(res.status, body?.error ?? `重命名失败: ${res.status}`)
+  }
+}
+
 /** 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事 */
 export function pollState(
   baseUrl: string,

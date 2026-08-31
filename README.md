@@ -254,6 +254,7 @@ cd ../server && npm install && npm start
 | GET    | `/api/room/<name>/auth-check`          | GM 密码验证（写权限确认）                                                                   |
 | DELETE | `/api/room/<name>`                     | 删除房间（需 GM 密码；不可恢复）                                                               |
 | PATCH   | `/api/room/<name>`                     | 修改房间密码（需 GM 密码；body `{ joinPwd?, gmPwd? }` 只改传了的字段，gmPwd 须 ≥6 位）             |
+| POST   | `/api/room/<name>/rename`              | 重命名房间（需 GM 密码；body `{ name }`，内容与密码原样保留，旧名立即 404——玩家需换新仓库）              |
 | GET    | `/*`                                   | Web 静态托管                                                                         |
 
 写接口（POST）的请求体上限 1MB，超限返回 413 并带上明确原因（不断开连接，客户端可据此判断是重试还是数据有问题）。

@@ -53,14 +53,12 @@ export interface UiState {
   sidebarRemoteOpen: boolean
   /** 侧边栏「本地房间」折叠组是否展开（默认展开） */
   sidebarLocalOpen: boolean
-  /** 已连接时的房间管理弹窗（保存更改=改密码 / 删除房间 / 退出） */
+  /** 已连接时的房间管理弹窗（改名 / 改密码 / 删除 / 退出） */
   manageRoomDialog: boolean
   /** 房间管理弹窗的提示文案 */
   manageError: string
-  /** 房间管理弹窗里「保存更改（改密码）」表单是否展开 */
-  changePwdOpen: boolean
-  /** 改密码表单草稿（报错重渲染时不丢） */
-  changePwdDraft: { joinPwd: string; gmPwd: string }
+  /** 房间管理弹窗草稿：名字 / 访问密码 / GM 密码（留空 = 不更改；报错重渲染时不丢） */
+  manageDraft: { name: string; joinPwd: string; gmPwd: string }
   /** 新建本地房间弹窗 */
   localRoomDialog: boolean
   /** 新建本地房间弹窗的草稿名 */
@@ -69,15 +67,15 @@ export interface UiState {
   localRoomError: string
   /** 「提交本地房间」（本地 → 远端 force push）弹窗 */
   pushLocalDialog: boolean
-  /** 提交弹窗「远端目标」的搜索词（存这里，重渲染/过滤时不丢） */
-  pushLocalQuery: string
-  /** 提交弹窗「本地来源」的搜索词（同上，两个选择器各自独立） */
-  pushLocalSourceQuery: string
-  /** 提交弹窗选中的本地来源（本地房间里默认是当前房间，可换成别的本地房间） */
+  /** 提交弹窗选中的本地来源（本地房间里固定为当前房间；远端房间里可换） */
   pushLocalSource: string
+  /** 提交弹窗目标列表的搜索词（存这里，重渲染/过滤时不丢） */
+  pushLocalQuery: string
+  /** 提交弹窗选中的目标远端房间（点列表高亮，点「提交」才执行） */
+  pushLocalTarget: string
   /** 提交弹窗的提示文案 */
   pushLocalError: string
-  /** 提交弹窗里的远端房间列表（供搜索选中；异步拉取，先置空再回填） */
+  /** 提交弹窗里的远端房间列表（异步拉取，先置空再回填） */
   pushLocalRooms: string[]
   /** 提交弹窗是否正在拉取房间列表 */
   pushLocalLoading: boolean
@@ -167,13 +165,16 @@ export interface GmContext {
   onEnterLocalRoom: (name: string) => RoomResult
   /** 修改房间密码（PATCH）：只改填了的字段；改完同步本机缓存 */
   onChangePwd: (joinPwd: string, gmPwd: string) => Promise<RoomResult>
+  /** 重命名当前房间（保留内容与密码；旧名立即失效——玩家需换新仓库）；本地房间走本地改名 */
+  onRenameRoom: (newName: string) => Promise<RoomResult>
   /** 本地房间的来源远端（另存为本地 / 提交成功时记录），提交时优先一键回推 */
   getLocalOrigin: (name: string) => { server: string; room: string } | undefined
   /**
-   * 提交本地房间到远端（force push）：目标不存在则新建、存在则整体覆盖。
-   * 入口仅对 GM 可见，写凭证不再手输——已有房间用缓存/当前登录凭证，新房间由弹窗提供 GM 密码。
+   * 提交本地房间到远端（force push）：把一份本地房间整体覆盖到目标已有远端房间。
+   * 入口仅对 GM 可见，写凭证不再手输——用缓存/当前登录的 GM 密码；401 视为凭证失效并清缓存。
+   * 新建远端房间走侧边栏「+」，这里只推已有目标。
    */
-  onPushLocalRoom: (name: string, target: string, newGmPwd?: string) => Promise<RoomResult>
+  onPushLocalRoom: (name: string, target: string) => Promise<RoomResult>
   /** 另存为本地：当前远端房间整体复制为一个本地房间（快照，含来源记录） */
   onSaveAsLocal: () => RoomResult
 }
@@ -354,8 +355,7 @@ function renderTopbar(
     if (gm.roomName) {
       ui.manageRoomDialog = true
       ui.manageError = ''
-      ui.changePwdOpen = false
-      ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+      ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     } else {
       ui.sidebarOpen = true
     }
@@ -478,17 +478,19 @@ function renderMoreMenu(
 
   // 提交本地房间：本地 → 远端 force push。提交是写入操作，入口只对 GM 可见——
   // 没有写权限（未登录 GM）的人根本不该看到这个按钮。本地房间里来源固定为当前房间；
-  // 远端房间里也要能进——在远端选「提交房间——提交哪个？搜索/点选」，让本地草稿推得到任意远端目标
+  // 远端房间里也要能进——在远端选「提交哪个本地房间」，让本地草稿推得到任意远端目标。
+  // 新建远端房间不在这里：走侧边栏「+」，这里只推已有目标
   if (gm.roomName && gm.authed && !gm.urlReadonly) {
     menu.append(
       menuItem('提交本地房间', () => {
         ui.moreMenuOpen = false
         ui.pushLocalDialog = true
         ui.pushLocalError = ''
-        ui.pushLocalQuery = ''
-        ui.pushLocalSourceQuery = ''
         // 本地房间里来源就是当前房间；远端房间里默认取第一个本地房间
         ui.pushLocalSource = gm.roomLocal ? gm.roomName : gm.localRooms[0] ?? ''
+        // 默认选中来源记录的远端目标（同源时），一键回推；否则留空由用户点选
+        const origin = gm.getLocalOrigin(ui.pushLocalSource)
+        ui.pushLocalTarget = origin && origin.server === gm.serverBase ? origin.room : ''
         ui.pushLocalRooms = []
         ui.pushLocalLoading = true
         rerender()
@@ -1109,27 +1111,65 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
   return backdrop
 }
 
-// ---------- 房间管理弹窗（已连接：保存更改=改密码 / 删除房间 / 退出） ----------
+// ---------- 房间管理弹窗（已连接：改名 / 改密码 / 删除 / 退出） ----------
 
 function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const { backdrop, modal, close } = modalShell('房间管理', () => {
     ui.manageRoomDialog = false
     ui.manageError = ''
-    ui.changePwdOpen = false
-    ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+    ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     rerender()
   })
 
-  const hint = el('div', 'gm-hint', ui.manageError)
+  const hint = el('div', 'gm-error', ui.manageError)
+  // 黄框警告：名字与已有房间冲突等「保存会被拒绝但不致命」的提示，与红底错误区分
+  const warn = el('div', 'gm-warn', '')
   modal.append(
     hint,
+    warn,
     el('div', 'field', `房间：${gm.roomName}${gm.serverBase ? `（${gm.serverBase.replace(/^https?:\/\//, '')}）` : ''}`),
   )
 
+  // 房间名字（留空不更改）：改名保留内容与密码，玩家需换新仓库
+  const nameInput = makeInput('text', `当前：${gm.roomName}（留空不更改）`, ui.manageDraft.name)
+  nameInput.maxLength = 40
+  nameInput.addEventListener('input', () => {
+    ui.manageDraft.name = nameInput.value
+    // 局部刷新警告框（不整弹窗重渲染，避免输入框失焦）
+    const name = ui.manageDraft.name.trim()
+    if (!name || name === gm.roomName) {
+      warn.textContent = ''
+    } else {
+      const clash = gm.roomLocal
+        ? gm.localRooms.includes(name)
+        : gm.knownRooms.some((r) => r.server === gm.serverBase && r.room === name)
+      warn.textContent = clash ? `「${name}」已被占用，保存将被拒绝。请换个新名字。` : ''
+    }
+  })
+  modal.append(el('div', 'field', '房间名字'), nameInput)
+
+  // 访问密码 / GM 密码：仅远端房间有（本地房间是纯本地草稿，没有仓库密码可改）
+  if (!gm.roomLocal) {
+    const joinInput = makeInput('password', '新加入密码（留空不更改）', ui.manageDraft.joinPwd)
+    joinInput.addEventListener('input', () => {
+      ui.manageDraft.joinPwd = joinInput.value
+    })
+    const gmInput = makeInput('password', '新 GM 密码（留空不更改，≥6 位）', ui.manageDraft.gmPwd)
+    gmInput.addEventListener('input', () => {
+      ui.manageDraft.gmPwd = gmInput.value
+    })
+    modal.append(
+      el('div', 'field', '访问密码'),
+      joinInput,
+      el('div', 'field', 'GM 密码'),
+      gmInput,
+    )
+  }
+
   const actions = el('div', 'modal-actions')
 
+  // 删除：危险操作单独成钮。远端需已登录 GM；本地直接删本机数据
   if (gm.roomLocal) {
-    // 本地房间：没有密码可改，只有删除本地 + 退出
     const delLocal = el('button', 'tbtn danger', '删除本地房间')
     delLocal.title = '本机数据，不可恢复'
     delLocal.addEventListener('click', () => {
@@ -1143,16 +1183,6 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
     })
     actions.append(delLocal)
   } else if (gm.authed) {
-    // 远端房间 + 已登录：保存更改（改密码）+ 删除房间
-    const saveBtn = el('button', 'tbtn', '保存更改')
-    saveBtn.title = '修改加入密码 / GM 密码'
-    saveBtn.addEventListener('click', () => {
-      ui.changePwdOpen = !ui.changePwdOpen
-      ui.manageError = ''
-      rerender()
-    })
-    actions.append(saveBtn)
-
     const delBtn = el('button', 'tbtn danger', '删除房间')
     delBtn.title = '删除后所有进度钟将丢失，无法恢复'
     delBtn.addEventListener('click', async () => {
@@ -1179,43 +1209,51 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
     }
   })
   actions.append(leaveBtn)
-  modal.append(actions)
 
-  // 「保存更改」展开的改密码表单（只对远端房间 + GM）
-  if (!gm.roomLocal && ui.changePwdOpen && gm.authed) {
-    const pwdSection = el('div', 'change-pwd')
-    pwdSection.append(el('label', 'field', '修改密码（留空 = 不改）'))
-    const joinInput = makeInput('password', '新加入密码（留空 = 不修改）', ui.changePwdDraft.joinPwd)
-    const gmInput = makeInput('password', '新 GM 密码（留空 = 不修改，≥6 位）', ui.changePwdDraft.gmPwd)
-    joinInput.addEventListener('input', () => {
-      ui.changePwdDraft.joinPwd = joinInput.value
-    })
-    gmInput.addEventListener('input', () => {
-      ui.changePwdDraft.gmPwd = gmInput.value
-    })
-    pwdSection.append(joinInput, gmInput)
-    const savePwd = el('button', 'tbtn primary', '保存') as HTMLButtonElement
-    const submitPwd = async () => {
-      const result = await gm.onChangePwd(ui.changePwdDraft.joinPwd.trim(), ui.changePwdDraft.gmPwd.trim())
-      if (result.ok) {
-        ui.changePwdOpen = false
-        ui.changePwdDraft = { joinPwd: '', gmPwd: '' }
+  // 保存：先改名（改名不动密码，后续改密仍用当前凭证），再改密；本地房间只改名
+  if (gm.roomLocal || gm.authed) {
+    const saveBtn = el('button', 'tbtn primary', '保存') as HTMLButtonElement
+    const save = async (): Promise<void> => {
+      const name = ui.manageDraft.name.trim()
+      const join = ui.manageDraft.joinPwd.trim()
+      const gmpwd = ui.manageDraft.gmPwd.trim()
+      if (!name && !join && !gmpwd) {
+        ui.manageError = '没有要保存的更改'
         rerender()
-      } else {
-        ui.manageError = result.error
-        rerender()
+        return
       }
+      if (name && name !== gm.roomName) {
+        const renamed = await gm.onRenameRoom(name)
+        if (!renamed.ok) {
+          ui.manageError = renamed.error
+          rerender()
+          return
+        }
+      }
+      if (!gm.roomLocal && (join || gmpwd)) {
+        const pwd = await gm.onChangePwd(join, gmpwd)
+        if (!pwd.ok) {
+          ui.manageError = pwd.error
+          rerender()
+          return
+        }
+      }
+      close()
     }
-    savePwd.addEventListener('click', () => void submitPwd())
-    for (const input of [joinInput, gmInput]) {
+    saveBtn.addEventListener('click', () => void save())
+    for (const input of [nameInput]) {
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') void submitPwd()
+        if (e.key === 'Enter') void save()
       })
     }
-    pwdSection.append(savePwd)
-    modal.append(pwdSection)
-    joinInput.focus()
+    actions.append(saveBtn)
   }
+
+  const cancelBtn = el('button', 'tbtn', '取消')
+  cancelBtn.addEventListener('click', close)
+  actions.append(cancelBtn)
+  modal.append(actions)
+  nameInput.focus()
 
   return backdrop
 }
@@ -1331,7 +1369,7 @@ function roomPicker(cfg: {
   return wrap
 }
 
-// ---------- 提交本地房间弹窗（本地 → 远端 force push） ----------
+// ---------- 提交本地房间弹窗（本地 → 远端 force push，只推已有目标） ----------
 
 function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const { backdrop, modal, close } = modalShell('提交本地房间', () => {
@@ -1340,52 +1378,52 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
     rerender()
   })
 
-  const hint = el('div', 'gm-hint', ui.pushLocalError)
-
-  // 来源：本地房间（要提交的那一份）。默认当前房间，可在下面的选择器里换
+  const hint = el('div', 'gm-error', ui.pushLocalError)
   const source = ui.pushLocalSource || gm.roomName
-  /** 提交中：拦住点选即上传的重复点击（失败后可再来一次） */
+  /** 提交中：拦住重复点击（失败后可再来一次） */
   let submitting = false
-  // 来源有远端记录（另存为本地 / 之前提交过）且指向当前服务器：列表里高亮它，点一下即一键回推
+  // 来源有远端记录（另存为本地 / 之前提交过）且指向当前服务器：默认选中它，一键回推
   const origin = gm.getLocalOrigin(source)
   const sameOrigin = origin && origin.server === gm.serverBase
-
-  modal.append(hint)
-
-  // 来源：本地房间。侧边栏同款选择器——搜索过滤 + 内嵌 box 随结果压缩。
-  // 本地房间里也照样给：默认选中当前房间，但要提交另一份本地草稿时不必先退出去切房间
-  modal.append(
-    el('div', 'field', '要提交的本地房间'),
-    roomPicker({
-      placeholder: '搜索本地房间…',
-      emptyHint: '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建',
-      noMatchHint: '没有匹配的本地房间',
-      rooms: gm.localRooms,
-      query: ui.pushLocalSourceQuery,
-      onQuery: (q) => {
-        ui.pushLocalSourceQuery = q
-      },
-      isPicked: (room) => room === source,
-      onPick: (room) => {
-        ui.pushLocalSource = room
-        rerender()
-      },
-      itemTitle: (room) => (room === source ? `当前来源：${room}` : `点选为提交来源：${room}`),
-    }),
-  )
+  if (sameOrigin && !ui.pushLocalTarget) {
+    ui.pushLocalTarget = origin!.room
+  }
 
   modal.append(
+    hint,
     el(
       'div',
       'field',
       `目标服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
     ),
+    el('div', 'field', `来源：本地房间「${source}」`),
   )
 
-  // 远端目标：同一套选择器，点一个房间 = 立即上传（整体覆盖该远端房间）
+  // 远端房间里发起：来源可换，补一个紧凑的本地房间列表（不整搜索——本地房间数量少）
+  if (!gm.roomLocal) {
+    const srcBox = el('div', 'room-picker-box')
+    for (const name of gm.localRooms) {
+      const item = el('button', `room-picker-item${name === source ? ' picked' : ''}`, name) as HTMLButtonElement
+      item.title = '点选为提交来源'
+      item.addEventListener('click', () => {
+        ui.pushLocalSource = name
+        ui.pushLocalTarget = ''
+        ui.pushLocalError = ''
+        rerender()
+      })
+      srcBox.append(item)
+    }
+    if (gm.localRooms.length === 0) {
+      srcBox.append(el('div', 'room-picker-empty', '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建'))
+    }
+    modal.append(srcBox)
+  }
+
+  // 目标远端房间：搜索 + 点选高亮；点「提交」才执行（点选即提交太危险，必须有确认步）
+  modal.append(el('div', 'field', `目标远端房间（点选「${source}」要覆盖到的目标）`))
   const targetPicker = roomPicker({
-    placeholder: '搜索远端房间，点击即提交…',
-    emptyHint: '暂无已有房间（可在下方输入新名字创建）',
+    placeholder: '搜索远端房间，点选为提交目标…',
+    emptyHint: '暂无已有房间——新建远端房间走侧边栏「+」',
     noMatchHint: '没有匹配的房间',
     rooms: ui.pushLocalRooms,
     loading: ui.pushLocalLoading,
@@ -1393,62 +1431,46 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
     onQuery: (q) => {
       ui.pushLocalQuery = q
     },
-    isPicked: (room) => !!sameOrigin && room === origin!.room,
+    isPicked: (room) => room === ui.pushLocalTarget,
     onPick: (room) => {
-      // 点选即上传：拦住重复点击，否则一次网络往返里能连发好几个提交
       if (submitting) return
-      submitting = true
-      hint.textContent = '提交中…'
-      void gm.onPushLocalRoom(source, room).then((result) => {
-        if (result.ok) close()
-        else {
-          submitting = false
-          ui.pushLocalError = result.error
-          rerender()
-        }
-      })
+      ui.pushLocalTarget = room
+      ui.pushLocalError = ''
+      rerender()
     },
-    itemTitle: () => '提交本地房间并整体覆盖该远端房间',
+    itemTitle: (room) => (room === ui.pushLocalTarget ? `已选中：覆盖「${room}」` : `点选为提交目标：覆盖「${room}」`),
   })
-  modal.append(el('div', 'field', `目标远端房间（点选即提交「${source}」）`), targetPicker)
+  modal.append(targetPicker)
 
   if (sameOrigin) {
-    modal.append(el('div', 'gm-hint', `该本地房间来自远端「${origin!.room}」，点列表中它即可一键回推`))
+    modal.append(el('div', 'gm-hint', `该本地房间来自远端「${origin!.room}」，已默认选中——点「提交」即一键回推`))
   }
-
-  // 或推到一个新名字：创建新的远端房间。新房间没有既有凭证，唯一要填的就是它的 GM 密码；
-  // 加入密码免了（新房间默认公开，玩家免密即可看）
-  const newRow = el('div', 'push-new-row')
-  const newName = makeInput('text', '或输入新房间名…', '')
-  newName.maxLength = 40
-  const newPwd = makeInput('password', '新房间 GM 密码（≥6 位）', '')
-  const newBtn = el('button', 'tbtn', '创建并提交') as HTMLButtonElement
-  newBtn.addEventListener('click', () => {
-    const target = newName.value.trim()
-    const pwd = newPwd.value.trim()
-    if (!target) return
-    if (pwd.length < 6) {
-      ui.pushLocalError = '新房间 GM 密码至少 6 位'
-      rerender()
-      return
-    }
-    newBtn.disabled = true
-    hint.textContent = '提交中…'
-    void gm.onPushLocalRoom(source, target, pwd).then((result) => {
-      if (result.ok) close()
-      else {
-        ui.pushLocalError = result.error
-        rerender()
-      }
-    })
-  })
-  newRow.append(newName, newPwd, newBtn)
-  modal.append(el('div', 'field', '或推到一个新名字'), newRow)
 
   const actions = el('div', 'modal-actions')
   const cancelBtn = el('button', 'tbtn', '取消')
   cancelBtn.addEventListener('click', close)
-  actions.append(cancelBtn)
+  const submitBtn = el('button', 'tbtn primary', '提交') as HTMLButtonElement
+  const submit = async (): Promise<void> => {
+    const target = ui.pushLocalTarget.trim()
+    if (!target) {
+      ui.pushLocalError = '请先点选一个目标远端房间'
+      rerender()
+      return
+    }
+    if (submitting) return
+    submitting = true
+    submitBtn.disabled = true
+    hint.textContent = '提交中…'
+    const result = await gm.onPushLocalRoom(source, target)
+    submitting = false
+    if (result.ok) close()
+    else {
+      ui.pushLocalError = result.error
+      rerender()
+    }
+  }
+  submitBtn.addEventListener('click', () => void submit())
+  actions.append(cancelBtn, submitBtn)
   modal.append(actions)
 
   // 异步拉远端房间列表（打开时已置 loading；拉完回填并重渲染）
@@ -1459,8 +1481,6 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
       rerender()
     })
   }
-  // 光标落在远端目标上：那才是这次要完成的动作，本地来源通常已经是当前房间
-  targetPicker.querySelector('input')?.focus()
   return backdrop
 }
 

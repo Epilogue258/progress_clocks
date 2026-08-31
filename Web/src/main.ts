@@ -12,7 +12,7 @@
 import './styles.css'
 import { Store, STORAGE_KEY } from './state'
 import { applyTheme, emptyRoomDraft, openRoomDialog, render, type GmContext, type UiState } from './ui'
-import { createEmptyState, type ClockState } from '../../common/types'
+import { createEmptyState, isValidRoomName, type ClockState } from '../../common/types'
 import {
   ApiError,
   changeRoomPwd,
@@ -21,6 +21,7 @@ import {
   fetchRoomState,
   listRooms,
   pollState,
+  renameRoom,
   saveRoomState,
   saveRoomStateForce,
   verifyKey,
@@ -103,15 +104,14 @@ const ui: UiState = {
   sidebarLocalOpen: true,
   manageRoomDialog: false,
   manageError: '',
-  changePwdOpen: false,
-  changePwdDraft: { joinPwd: '', gmPwd: '' },
+  manageDraft: { name: '', joinPwd: '', gmPwd: '' },
   localRoomDialog: false,
   localRoomDraft: '',
   localRoomError: '',
   pushLocalDialog: false,
-  pushLocalQuery: '',
-  pushLocalSourceQuery: '',
   pushLocalSource: '',
+  pushLocalQuery: '',
+  pushLocalTarget: '',
   pushLocalError: '',
   pushLocalRooms: [],
   pushLocalLoading: false,
@@ -210,6 +210,17 @@ const gm: GmContext = {
         gmKey = key
         gmAuthed = true
         persistGmKey(key)
+        // 已加入的远端房间里登录 GM：把写凭证记进 known-rooms，
+        // 之后「提交本地房间」到它直接复用，不用再以 GM 身份进一次
+        if (roomName && !roomLocal) {
+          const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === roomName)
+          rememberRoom({
+            server: API_BASE,
+            room: roomName,
+            joinPwd: entry?.joinPwd ?? roomJoinPwd,
+            gmPwd: key,
+          })
+        }
       } else if (result === 'unauthorized') {
         error = roomName ? 'GM 密码无效，请重试' : 'GM 密钥无效，请重试'
       } else {
@@ -462,46 +473,100 @@ const gm: GmContext = {
     return { ok: true as const }
   },
   /**
-   * 提交本地房间 → 远端（GitHub 模型的 force push）：
-   * 目标不存在则新建并推送，已存在则整体覆盖。入口仅对 GM 可见，所以写凭证不再手输——
-   * 已有房间用缓存/当前登录的 GM 密码，新房间的 GM 密码由弹窗提供（新房间没既有凭证可复用）。
-   * 成功后记住远端来源，下次提交一键回推。
+   * 提交本地房间 → 远端（GitHub 模型的 force push）：把一份本地房间整体覆盖到目标已有远端房间。
+   * 新建远端房间走侧边栏「+」，这里只推已有目标——写凭证用缓存/当前登录的 GM 密码，弹窗不再手输。
+   * 401 视为凭证失效：清掉缓存，让用户重新以 GM 身份进入该房间获取新密码后再试。
+   * 成功后记住远端来源，下次提交默认选中一键回推。
    */
-  onPushLocalRoom: async (name: string, target: string, newGmPwd = '') => {
+  onPushLocalRoom: async (name: string, target: string) => {
     const room = target.trim()
-    if (!room) return { ok: false as const, error: '请填写目标房间名' }
+    if (!room) return { ok: false as const, error: '请点选一个目标远端房间' }
     const state = loadLocalState(name)
     // 已有房间的写凭证：本机缓存过 GM 密码就用它，否则退回当前登录凭证
     const cached = loadKnownRooms().find((r) => r.server === API_BASE && r.room === room)
-    const pwd = newGmPwd || (cached && cached.gmPwd) || gmKey || ''
-    if (!pwd) return { ok: false as const, error: `没有「${room}」的 GM 密码，无法覆盖` }
+    const pwd = (cached && cached.gmPwd) || gmKey || ''
+    if (!pwd) {
+      return { ok: false as const, error: `没有「${room}」的 GM 密码，请先以 GM 身份进入该房间` }
+    }
     try {
-      if (newGmPwd) {
-        // 推到一个新名字：先建仓（新房间公开，免加入密码）。重名 409 = 目标已存在，
-        // 当作覆盖处理，写凭证就是输入的这个密码
-        try {
-          await createRoom(API_BASE, room, '', newGmPwd)
-        } catch (e) {
-          if (!(e instanceof ApiError && e.status === 409)) throw e
-        }
-      }
-      // force push：新房间直接推刚建的空仓，已有房间整体覆盖
+      // force push：整体覆盖目标已有房间（内容是本次提交的本地草稿）
       await saveRoomStateForce(API_BASE, room, pwd, state)
-      showToast(
-        newGmPwd
-          ? `本地房间「${name}」已发布为新房间「${room}」`
-          : `本地房间「${name}」已提交，覆盖了「${room}」`,
-      )
-      // 记住远端来源：下次提交直接高亮回推目标
+      showToast(`本地房间「${name}」已提交，覆盖了「${room}」`)
+      // 记住远端来源：下次提交直接默认选中回推目标
       rememberRoom({ server: API_BASE, room, joinPwd: '', gmPwd: pwd })
       rememberLocalRoom(name, { server: API_BASE, room })
       return { ok: true as const }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        return { ok: false as const, error: `「${room}」的 GM 密码与本机不同，无法覆盖` }
+        // GM 密码失效：本机缓存不可信，清掉这条房间的写凭证；若当前正以它登录，一并登出
+        forgetRoom(API_BASE, room)
+        if (roomName === room && !roomLocal) {
+          gmKey = null
+          gmAuthed = false
+          localStorage.removeItem(ROOM_GM_STORAGE)
+        }
+        return { ok: false as const, error: `「${room}」的 GM 密码无效，请重新以 GM 身份进入后再试` }
       }
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
+  },
+  /**
+   * 重命名当前房间（保留全部内容与密码）：远端走服务端原子改名，旧名立即 404——
+   * 玩家若缓存旧分享链接会失效，需要换新仓库；本地房间在本地复制状态槽改名，不联网。
+   */
+  onRenameRoom: async (newName: string) => {
+    const next = newName.trim()
+    if (!next || next === roomName) return { ok: false as const, error: '房间名未变化' }
+    if (!isValidRoomName(next)) {
+      return { ok: false as const, error: '房间名不合法（1-32 位，不能用 / \\ < > : " | ? *）' }
+    }
+    if (roomLocal) {
+      // 本地房间：本地改名——把状态槽与注册表（含来源记录）迁到新名字，再切过去
+      try {
+        localStorage.setItem(localSlotKey(next), JSON.stringify(loadLocalState(roomName)))
+      } catch {
+        return { ok: false as const, error: '本机存储空间不足' }
+      }
+      const origin = getLocalOrigin(roomName)
+      rememberLocalRoom(next, origin)
+      forgetLocalRoom(roomName)
+      clearLocalState(roomName)
+      enterLocalRoom(next)
+      rerender()
+      showToast(`本地房间已改名「${next}」`)
+      return { ok: true as const }
+    }
+    // 远端房间：服务端原子改名（内容与密码原样保留）
+    try {
+      await renameRoom(API_BASE, roomName, gmKey ?? '', next)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        gmKey = null
+        gmAuthed = false
+        localStorage.removeItem(ROOM_GM_STORAGE)
+        return { ok: false as const, error: 'GM 密码无效，请重新登录后再改名' }
+      }
+      return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
+    }
+    // 改名后本机各处引用同步到新名字：known-rooms 缓存、当前会话与 URL、本地副本的来源记录
+    const oldName = roomName
+    const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === oldName)
+    if (entry) {
+      forgetRoom(API_BASE, oldName)
+      rememberRoom({ server: entry.server, room: next, joinPwd: entry.joinPwd, gmPwd: entry.gmPwd })
+    }
+    // 指向旧名的本地副本（另存为本地）来源记录跟着改成新名，回推目标不失效
+    for (const local of listLocalRooms()) {
+      const o = getLocalOrigin(local)
+      if (o && o.server === API_BASE && o.room === oldName) {
+        rememberLocalRoom(local, { server: o.server, room: next })
+      }
+    }
+    // 当前会话切到新名字：内容本就在全局槽没动，enterRoom 只是换名字与 URL
+    enterRoom(next, roomJoinPwd)
+    rerender()
+    showToast(`房间已改名「${next}」，旧名「${oldName}」已失效`)
+    return { ok: true as const }
   },
   /**
    * 另存为本地：把当前远端房间整体复制成一个本地房间（快照）。
@@ -813,7 +878,7 @@ window.addEventListener('keydown', (e) => {
     else if (ui.manageRoomDialog) {
       ui.manageRoomDialog = false
       ui.manageError = ''
-      ui.changePwdOpen = false
+      ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     } else if (ui.roomDialog) ui.roomDialog = false
     else if (ui.creating) ui.creating = false
     else if (ui.gmDialog) {
