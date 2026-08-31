@@ -13,7 +13,8 @@ cd ../server && npm install && npm start
 # 开发模式（文件变更自动重启）：npm run dev
 ```
 
-默认端口 2333（环境变量 `PORT` 可改）。数据文件：`data/state.json`（原子写入，运行时生成，已 gitignore）。
+默认端口 2333（环境变量 `PORT` 可改）。数据：默认房间 `data/state.json`，命名房间
+`data/rooms/<name>/state.json` + `meta.json`（双密码）——均原子写入、运行时生成、已 gitignore。
 
 ## API
 
