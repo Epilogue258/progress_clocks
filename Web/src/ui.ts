@@ -476,9 +476,8 @@ function renderMoreMenu(
     )
   }
 
-  // 提交本地房间：本地 → 远端 force push。提交是写入操作，入口只对 GM 可见——
-  // 没有写权限（未登录 GM）的人根本不该看到这个按钮。本地房间里来源固定为当前房间；
-  // 远端房间里也要能进——在远端选「提交哪个本地房间」，让本地草稿推得到任意远端目标。
+  // 提交本地房间：本地 → 远端 force push。提交是写入操作，入口只对 GM 可见。
+  // 目标语义：进入远端房间后目标即已确认（当前房间）；本地房间里才需要从列表选目标。
   // 新建远端房间不在这里：走侧边栏「+」，这里只推已有目标
   if (gm.roomName && gm.authed && !gm.urlReadonly) {
     menu.append(
@@ -486,11 +485,15 @@ function renderMoreMenu(
         ui.moreMenuOpen = false
         ui.pushLocalDialog = true
         ui.pushLocalError = ''
-        // 本地房间里来源就是当前房间；远端房间里默认取第一个本地房间
-        ui.pushLocalSource = gm.roomLocal ? gm.roomName : gm.localRooms[0] ?? ''
-        // 默认选中来源记录的远端目标（同源时），一键回推；否则留空由用户点选
-        const origin = gm.getLocalOrigin(ui.pushLocalSource)
-        ui.pushLocalTarget = origin && origin.server === gm.serverBase ? origin.room : ''
+        ui.pushLocalQuery = ''
+        ui.pushLocalTarget = ''
+        // 本地房间里来源就是当前房间；远端房间里默认取「来源指向当前房间」的本地草稿（回推），否则取第一个
+        ui.pushLocalSource = gm.roomLocal
+          ? gm.roomName
+          : (gm.localRooms.find((n) => {
+              const o = gm.getLocalOrigin(n)
+              return !!o && o.server === gm.serverBase && o.room === gm.roomName
+            }) ?? gm.localRooms[0] ?? '')
         ui.pushLocalRooms = []
         ui.pushLocalLoading = true
         rerender()
@@ -1379,71 +1382,70 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
   })
 
   const hint = el('div', 'gm-error', ui.pushLocalError)
-  const source = ui.pushLocalSource || gm.roomName
   /** 提交中：拦住重复点击（失败后可再来一次） */
   let submitting = false
-  // 来源有远端记录（另存为本地 / 之前提交过）且指向当前服务器：默认选中它，一键回推
-  const origin = gm.getLocalOrigin(source)
-  const sameOrigin = origin && origin.server === gm.serverBase
-  if (sameOrigin && !ui.pushLocalTarget) {
-    ui.pushLocalTarget = origin!.room
+  // 目标：进入远端房间时即已确认（当前房间）；本地房间里才需要从列表选
+  const targetFixed = !gm.roomLocal
+  const source = ui.pushLocalSource || gm.roomName
+  if (targetFixed) {
+    ui.pushLocalTarget = gm.roomName
+  } else if (!ui.pushLocalTarget) {
+    const origin = gm.getLocalOrigin(source)
+    if (origin && origin.server === gm.serverBase) ui.pushLocalTarget = origin.room
   }
+  const target = ui.pushLocalTarget
 
-  modal.append(
-    hint,
-    el(
-      'div',
-      'field',
-      `目标服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
-    ),
-    el('div', 'field', `来源：本地房间「${source}」`),
-  )
+  modal.append(hint)
 
-  // 远端房间里发起：来源可换，补一个紧凑的本地房间列表（不整搜索——本地房间数量少）
+  // 来源：本地房间发起时固定当前草稿；远端房间发起时选要上传哪份草稿
+  modal.append(el('div', 'field', gm.roomLocal ? `本地草稿：${source}` : '本地草稿'))
   if (!gm.roomLocal) {
-    const srcBox = el('div', 'room-picker-box')
-    for (const name of gm.localRooms) {
-      const item = el('button', `room-picker-item${name === source ? ' picked' : ''}`, name) as HTMLButtonElement
-      item.title = '点选为提交来源'
-      item.addEventListener('click', () => {
-        ui.pushLocalSource = name
-        ui.pushLocalTarget = ''
-        ui.pushLocalError = ''
-        rerender()
-      })
-      srcBox.append(item)
-    }
-    if (gm.localRooms.length === 0) {
-      srcBox.append(el('div', 'room-picker-empty', '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建'))
-    }
-    modal.append(srcBox)
+    modal.append(
+      roomPicker({
+        placeholder: '搜索本地草稿…',
+        emptyHint: '还没有本地房间——先进本地房间做草稿',
+        noMatchHint: '没有匹配的本地草稿',
+        rooms: gm.localRooms,
+        query: ui.pushLocalQuery,
+        onQuery: (q) => {
+          ui.pushLocalQuery = q
+        },
+        isPicked: (r) => r === source,
+        onPick: (r) => {
+          if (submitting) return
+          ui.pushLocalSource = r
+          ui.pushLocalError = ''
+          rerender()
+        },
+        itemTitle: (r) => (r === source ? `当前草稿：${r}` : `点选为要上传的草稿：${r}`),
+      }),
+    )
   }
 
-  // 目标远端房间：搜索 + 点选高亮；点「提交」才执行（点选即提交太危险，必须有确认步）
-  modal.append(el('div', 'field', `目标远端房间（点选「${source}」要覆盖到的目标）`))
-  const targetPicker = roomPicker({
-    placeholder: '搜索远端房间，点选为提交目标…',
-    emptyHint: '暂无已有房间——新建远端房间走侧边栏「+」',
-    noMatchHint: '没有匹配的房间',
-    rooms: ui.pushLocalRooms,
-    loading: ui.pushLocalLoading,
-    query: ui.pushLocalQuery,
-    onQuery: (q) => {
-      ui.pushLocalQuery = q
-    },
-    isPicked: (room) => room === ui.pushLocalTarget,
-    onPick: (room) => {
-      if (submitting) return
-      ui.pushLocalTarget = room
-      ui.pushLocalError = ''
-      rerender()
-    },
-    itemTitle: (room) => (room === ui.pushLocalTarget ? `已选中：覆盖「${room}」` : `点选为提交目标：覆盖「${room}」`),
-  })
-  modal.append(targetPicker)
-
-  if (sameOrigin) {
-    modal.append(el('div', 'gm-hint', `该本地房间来自远端「${origin!.room}」，已默认选中——点「提交」即一键回推`))
+  // 目标：远端房间发起时固定当前房间；本地房间发起时选要覆盖哪个远端房间
+  modal.append(el('div', 'field', targetFixed ? `上传到：${target}` : '上传到'))
+  if (!targetFixed) {
+    modal.append(
+      roomPicker({
+        placeholder: '搜索远端房间…',
+        emptyHint: '暂无远端房间',
+        noMatchHint: '没有匹配的房间',
+        rooms: ui.pushLocalRooms,
+        loading: ui.pushLocalLoading,
+        query: ui.pushLocalQuery,
+        onQuery: (q) => {
+          ui.pushLocalQuery = q
+        },
+        isPicked: (r) => r === target,
+        onPick: (r) => {
+          if (submitting) return
+          ui.pushLocalTarget = r
+          ui.pushLocalError = ''
+          rerender()
+        },
+        itemTitle: (r) => (r === target ? `已选中：覆盖「${r}」` : `点选为上传目标：覆盖「${r}」`),
+      }),
+    )
   }
 
   const actions = el('div', 'modal-actions')
@@ -1451,9 +1453,13 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
   cancelBtn.addEventListener('click', close)
   const submitBtn = el('button', 'tbtn primary', '提交') as HTMLButtonElement
   const submit = async (): Promise<void> => {
-    const target = ui.pushLocalTarget.trim()
+    if (!gm.roomLocal && !gm.localRooms.includes(source)) {
+      ui.pushLocalError = '请先点选一份本地草稿'
+      rerender()
+      return
+    }
     if (!target) {
-      ui.pushLocalError = '请先点选一个目标远端房间'
+      ui.pushLocalError = '请选择一个上传目标'
       rerender()
       return
     }
