@@ -110,6 +110,7 @@ const ui: UiState = {
   localRoomError: '',
   pushLocalDialog: false,
   pushLocalQuery: '',
+  pushLocalSourceQuery: '',
   pushLocalSource: '',
   pushLocalError: '',
   pushLocalRooms: [],

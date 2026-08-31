@@ -69,9 +69,11 @@ export interface UiState {
   localRoomError: string
   /** 「提交本地房间」（本地 → 远端 force push）弹窗 */
   pushLocalDialog: boolean
-  /** 提交弹窗的搜索词（存这里，重渲染/过滤时不丢） */
+  /** 提交弹窗「远端目标」的搜索词（存这里，重渲染/过滤时不丢） */
   pushLocalQuery: string
-  /** 提交弹窗选中的本地来源（本地房间里固定为当前房间；远端房间里可换） */
+  /** 提交弹窗「本地来源」的搜索词（同上，两个选择器各自独立） */
+  pushLocalSourceQuery: string
+  /** 提交弹窗选中的本地来源（本地房间里默认是当前房间，可换成别的本地房间） */
   pushLocalSource: string
   /** 提交弹窗的提示文案 */
   pushLocalError: string
@@ -484,6 +486,7 @@ function renderMoreMenu(
         ui.pushLocalDialog = true
         ui.pushLocalError = ''
         ui.pushLocalQuery = ''
+        ui.pushLocalSourceQuery = ''
         // 本地房间里来源就是当前房间；远端房间里默认取第一个本地房间
         ui.pushLocalSource = gm.roomLocal ? gm.roomName : gm.localRooms[0] ?? ''
         ui.pushLocalRooms = []
@@ -1257,6 +1260,77 @@ function renderLocalRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): H
   return backdrop
 }
 
+// ---------- 内嵌房间选择器（搜索栏 + 内嵌 box） ----------
+
+/**
+ * 与侧边栏同款的选择器：上方搜索栏，下方一个内嵌 box 列房间。
+ *
+ * 两个要点：
+ * - **过滤在前端**，不打服务器；输入走 `paint()` 局部重画，不整屏 rerender——
+ *   否则输入框失焦，没法连续敲字。搜索词由调用方存进 UiState，重渲染时不丢。
+ * - **box 高度随结果压缩**：不是固定高度的滚动区，条目少了容器就跟着矮下去，
+ *   只有多到超过 CSS 的 `max-height` 才滚动。空列表时也不要留一块空白。
+ */
+function roomPicker(cfg: {
+  placeholder: string
+  /** 一个房间都没有时的提示 */
+  emptyHint: string
+  /** 有房间但没匹配上时的提示 */
+  noMatchHint: string
+  rooms: string[]
+  loading?: boolean
+  /** 初始搜索词（来自 UiState；之后的输入由本组件自己持有） */
+  query: string
+  onQuery: (q: string) => void
+  isPicked: (room: string) => boolean
+  onPick: (room: string) => void
+  itemTitle?: (room: string) => string
+}): HTMLElement {
+  const wrap = el('div', 'room-picker')
+  const search = makeInput('text', cfg.placeholder, cfg.query)
+  search.className = 'text-input sidebar-search'
+  const box = el('div', 'room-picker-box')
+
+  // 输入后由本组件持有搜索词：读 cfg.query 拿到的是构造时的旧值
+  let query = cfg.query
+
+  const paint = (): void => {
+    box.textContent = ''
+    if (cfg.loading) {
+      box.append(el('div', 'room-picker-empty', '加载中…'))
+      return
+    }
+    const q = query.trim().toLowerCase()
+    const matched = cfg.rooms.filter((r) => r.toLowerCase().includes(q))
+    if (matched.length === 0) {
+      box.append(
+        el('div', 'room-picker-empty', cfg.rooms.length === 0 ? cfg.emptyHint : cfg.noMatchHint),
+      )
+      return
+    }
+    // 上限只是防极端情况（几千个房间画到卡），正常列表远不到
+    for (const room of matched.slice(0, 30)) {
+      const item = el(
+        'button',
+        `room-picker-item${cfg.isPicked(room) ? ' picked' : ''}`,
+        room,
+      ) as HTMLButtonElement
+      item.title = cfg.itemTitle ? cfg.itemTitle(room) : room
+      item.addEventListener('click', () => cfg.onPick(room))
+      box.append(item)
+    }
+  }
+
+  search.addEventListener('input', () => {
+    query = search.value
+    cfg.onQuery(query)
+    paint()
+  })
+  paint()
+  wrap.append(search, box)
+  return wrap
+}
+
 // ---------- 提交本地房间弹窗（本地 → 远端 force push） ----------
 
 function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
@@ -1268,31 +1342,37 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
 
   const hint = el('div', 'gm-hint', ui.pushLocalError)
 
-  // 来源：本地房间（要提交的那一份）。本地房间里固定为当前房间；远端房间里可换
+  // 来源：本地房间（要提交的那一份）。默认当前房间，可在下面的选择器里换
   const source = ui.pushLocalSource || gm.roomName
+  /** 提交中：拦住点选即上传的重复点击（失败后可再来一次） */
+  let submitting = false
   // 来源有远端记录（另存为本地 / 之前提交过）且指向当前服务器：列表里高亮它，点一下即一键回推
   const origin = gm.getLocalOrigin(source)
   const sameOrigin = origin && origin.server === gm.serverBase
 
-  modal.append(hint, el('div', 'field', `来源：本地房间「${source}」`))
+  modal.append(hint)
 
-  // 远端房间里没有隐含来源，给一个本地房间选择行（点选切换来源）
-  if (!gm.roomLocal) {
-    const srcList = el('div', 'push-room-list')
-    for (const name of gm.localRooms) {
-      const item = el('button', `push-room-item${name === source ? ' selected' : ''}`, name) as HTMLButtonElement
-      item.title = '点选为提交来源'
-      item.addEventListener('click', () => {
-        ui.pushLocalSource = name
+  // 来源：本地房间。侧边栏同款选择器——搜索过滤 + 内嵌 box 随结果压缩。
+  // 本地房间里也照样给：默认选中当前房间，但要提交另一份本地草稿时不必先退出去切房间
+  modal.append(
+    el('div', 'field', '要提交的本地房间'),
+    roomPicker({
+      placeholder: '搜索本地房间…',
+      emptyHint: '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建',
+      noMatchHint: '没有匹配的本地房间',
+      rooms: gm.localRooms,
+      query: ui.pushLocalSourceQuery,
+      onQuery: (q) => {
+        ui.pushLocalSourceQuery = q
+      },
+      isPicked: (room) => room === source,
+      onPick: (room) => {
+        ui.pushLocalSource = room
         rerender()
-      })
-      srcList.append(item)
-    }
-    if (gm.localRooms.length === 0) {
-      srcList.append(el('div', 'gm-hint', '还没有本地房间——先进本地房间做草稿，或到本地房间的「更多」里新建'))
-    }
-    modal.append(el('div', 'field', '要提交的本地房间'), srcList)
-  }
+      },
+      itemTitle: (room) => (room === source ? `当前来源：${room}` : `点选为提交来源：${room}`),
+    }),
+  )
 
   modal.append(
     el(
@@ -1302,47 +1382,35 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
     ),
   )
 
-  // 内嵌房间列表：像侧边栏一样搜索，点一个房间 = 选中并立即上传（整体覆盖该远端房间）。
-  // 搜索走局部重画，不整弹窗 rerender——否则输入框失焦，没法连续敲字过滤
-  const search = makeInput('text', '搜索房间，点击即提交…', ui.pushLocalQuery)
-  search.className = 'text-input sidebar-search'
-  search.addEventListener('input', () => {
-    ui.pushLocalQuery = search.value
-    paintList()
-  })
-  modal.append(search)
-
-  const list = el('div', 'push-room-list push-rooms')
-  const paintList = (): void => {
-    list.textContent = ''
-    const q = ui.pushLocalQuery.trim().toLowerCase()
-    if (ui.pushLocalLoading) {
-      list.append(el('div', 'gm-hint', '加载中…'))
-      return
-    }
-    const matches = ui.pushLocalRooms.filter((r) => r.toLowerCase().includes(q))
-    if (matches.length === 0) {
-      list.append(el('div', 'gm-hint', q ? '没有匹配的房间' : '暂无已有房间（可在下方输入新名字创建）'))
-    }
-    for (const room of matches.slice(0, 30)) {
-      const item = el('button', `push-room-item${sameOrigin && room === origin!.room ? ' selected' : ''}`, room) as HTMLButtonElement
-      item.title = '提交本地房间并整体覆盖该远端房间'
-      item.addEventListener('click', () => {
-        item.disabled = true
-        hint.textContent = '提交中…'
-        void gm.onPushLocalRoom(source, room).then((result) => {
-          if (result.ok) close()
-          else {
-            ui.pushLocalError = result.error
-            rerender()
-          }
-        })
+  // 远端目标：同一套选择器，点一个房间 = 立即上传（整体覆盖该远端房间）
+  const targetPicker = roomPicker({
+    placeholder: '搜索远端房间，点击即提交…',
+    emptyHint: '暂无已有房间（可在下方输入新名字创建）',
+    noMatchHint: '没有匹配的房间',
+    rooms: ui.pushLocalRooms,
+    loading: ui.pushLocalLoading,
+    query: ui.pushLocalQuery,
+    onQuery: (q) => {
+      ui.pushLocalQuery = q
+    },
+    isPicked: (room) => !!sameOrigin && room === origin!.room,
+    onPick: (room) => {
+      // 点选即上传：拦住重复点击，否则一次网络往返里能连发好几个提交
+      if (submitting) return
+      submitting = true
+      hint.textContent = '提交中…'
+      void gm.onPushLocalRoom(source, room).then((result) => {
+        if (result.ok) close()
+        else {
+          submitting = false
+          ui.pushLocalError = result.error
+          rerender()
+        }
       })
-      list.append(item)
-    }
-  }
-  paintList()
-  modal.append(list)
+    },
+    itemTitle: () => '提交本地房间并整体覆盖该远端房间',
+  })
+  modal.append(el('div', 'field', `目标远端房间（点选即提交「${source}」）`), targetPicker)
 
   if (sameOrigin) {
     modal.append(el('div', 'gm-hint', `该本地房间来自远端「${origin!.room}」，点列表中它即可一键回推`))
@@ -1391,7 +1459,8 @@ function renderPushLocalModal(ui: UiState, gm: GmContext, rerender: Rerender): H
       rerender()
     })
   }
-  search.focus()
+  // 光标落在远端目标上：那才是这次要完成的动作，本地来源通常已经是当前房间
+  targetPicker.querySelector('input')?.focus()
   return backdrop
 }
 
