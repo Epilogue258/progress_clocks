@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import secrets
@@ -119,6 +120,10 @@ def request(
             return Response(resp.status, resp.read(), dict(resp.headers))
     except urllib.error.HTTPError as e:
         return Response(e.code, e.read(), dict(e.headers))
+    except http.client.RemoteDisconnected:
+        # 请求体还没发完连接就被服务端掐断（历史 bug：超限时 pause 后回 413 会触发）。
+        # 折叠成 status=-1，让上层按 FAIL 统计而不是整个脚本 traceback 崩掉
+        return Response(-1, b'<connection dropped>', {})
 
 
 class Report:

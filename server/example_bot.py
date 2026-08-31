@@ -96,7 +96,7 @@ class Room:
         return json.loads(body)
 
     def save(self, state: dict) -> dict:
-        """带 version 写（乐观锁）：409 时服务端不回最新状态，由调用方提示重试。"""
+        """带 version 写（乐观锁）：409 时服务端会回最新状态（state 字段），调用方拉取合并后重试。"""
         if not self.key:
             raise ApiError(401, '写命令需要 GM 密码（--key）')
         status, body = request(self.base, 'POST', f'/api/room/{self.qname}/state',

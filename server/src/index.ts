@@ -119,31 +119,30 @@ function json(res: ServerResponse, code: number, data: unknown): void {
 /** 请求体超限。单独一个类型，好和内部错误区分开——回 413 而不是 500 */
 class BodyTooLargeError extends Error {}
 
-/** 读取请求体（限制大小，防滥用） */
+/** 读取请求体（限制大小，防滥用）。
+ *  超限时不能立刻回 413：请求体还没消费完就 end 响应，Node 会强制关掉连接，
+ *  客户端只看到 Empty reply / RemoteDisconnected，拿不到「请求体过大」这个明确原因。
+ *  正确姿势是继续把剩余数据读完（丢弃），等 end 再 reject——连接自然走完，413 才能送达。 */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
-    let settled = false
-    // data/end/error 可能重复触发，兜底只兑现一次
-    const settle = (fn: () => void): void => {
-      if (settled) return
-      settled = true
-      fn()
-    }
+    let tooLarge = false
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return // 已超限：继续消费但丢弃，好让连接走完、413 能送出去
       size += chunk.length
       if (size > MAX_BODY) {
-        // 超限就停止读取，但别 destroy——连接一断客户端只能看到 ECONNRESET，
-        // 拿不到「请求体过大」这个明确原因（QQ Bot 之类只能干瞪眼）
-        req.pause()
-        settle(() => reject(new BodyTooLargeError('请求体过大')))
+        tooLarge = true
+        chunks.length = 0 // 数据不全，别再给调用方半截内容
         return
       }
       chunks.push(chunk)
     })
-    req.on('end', () => settle(() => resolve(Buffer.concat(chunks).toString('utf-8'))))
-    req.on('error', (err) => settle(() => reject(err)))
+    req.on('end', () => {
+      if (tooLarge) reject(new BodyTooLargeError('请求体过大'))
+      else resolve(Buffer.concat(chunks).toString('utf-8'))
+    })
+    req.on('error', (err) => reject(err))
   })
 }
 
