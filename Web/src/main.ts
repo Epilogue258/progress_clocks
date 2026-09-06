@@ -29,6 +29,7 @@ import {
   type VerifyResult,
 } from './api'
 import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './known-rooms'
+import { loadKnownServers, rememberServer } from './known-servers'
 import {
   clearLocalState,
   forgetLocalRoom,
@@ -57,6 +58,10 @@ function resolveApiBase(): string {
 }
 
 let API_BASE = resolveApiBase()
+// 分享链接里的 ?server= 是「GM 告诉玩家服务器在哪」的主要渠道：记进已知服务器，
+// 下次打开（或装了 PWA 后从图标启动，URL 不带参数）不必再依赖链接
+const serverFromUrl = new URLSearchParams(location.search).get('server')
+if (serverFromUrl) rememberServer(normalizeBase(serverFromUrl))
 
 // 房间配置：?room= URL 参数 > localStorage 记忆（密码仅存 localStorage，不进 URL）
 // 双密码：joinPwd = 玩家只读凭证（可空 = 公开房间），gmPwd = GM 写凭证（必填 ≥6 位）
@@ -229,6 +234,7 @@ const gm: GmContext = {
     if (serverChanged) {
       API_BASE = next
       localStorage.setItem(API_BASE_STORAGE, next)
+      rememberServer(next)
     }
 
     // 凭证：填了就验新的；没填但换了服务器，旧凭证要对着新服务器复验一次
@@ -359,6 +365,10 @@ const gm: GmContext = {
   get knownRooms() {
     return loadKnownRooms()
   },
+  /** 本机记住的服务器地址（最近使用的在前），连接弹窗里点选即填 */
+  get knownServers() {
+    return loadKnownServers()
+  },
   /** 切换到已知房间：直接用缓存的密码进，不必重输 */
   onSwitchRoom: async (entry: KnownRoom) => {
     if (entry.room === roomName && entry.server === API_BASE) return { ok: true as const }
@@ -371,6 +381,7 @@ const gm: GmContext = {
       // 已知房间自带服务器地址：切过去时连地址一起换（这就是「一键切换」的意义）
       API_BASE = normalizeBase(entry.server)
       localStorage.setItem(API_BASE_STORAGE, API_BASE)
+      rememberServer(API_BASE)
       enterRoom(entry.room, entry.joinPwd)
       store.replaceState(remote)
       // 同加入房间：本地已被远端整体替换，dirty 归零，否则轮询永久停摆
@@ -727,7 +738,8 @@ if (roomLocal) {
 } else if (roomName) {
   void bootstrapPull()
 } else {
-  store.replaceState(createEmptyState())
+  // 空白工作区：构造器已从全局槽恢复上次内容，这里只渲染、不联网。
+  // 绝不能 replaceState 置空——那会丢掉工作区里没进房间的钟，刷新/重开即失忆（?demo 也因此失效过）
   rerender()
 }
 
@@ -1064,3 +1076,25 @@ window
     applyTheme()
     rerender()
   })
+
+// ---------- PWA ----------
+
+// 仅安全上下文注册（https 或 localhost）：http 局域网直连下 Service Worker 不可用，
+// register 会直接拒绝——静默忽略，网页行为不受任何影响。
+// './' 相对路径：base './' 的构建产物部署在任意子路径下，scope 都自动跟随所在目录
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  void navigator.serviceWorker
+    .register('./sw.js')
+    .then((reg) => {
+      reg.addEventListener('updatefound', () => {
+        const next = reg.installing
+        next?.addEventListener('statechange', () => {
+          // 首次安装（尚无 controller）不算「更新」；有等待中的新版本才提示
+          if (next.state === 'installed' && navigator.serviceWorker.controller) {
+            showToast('已更新到新版本，下次打开生效')
+          }
+        })
+      })
+    })
+    .catch(() => {})
+}

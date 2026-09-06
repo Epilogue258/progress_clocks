@@ -37,6 +37,14 @@
 
 ## Done
 
+- [x] **PWA 可安装 + 已知服务器快捷选择**（web/pwa）——2026-09-06 完成
+  `public/manifest.json` + 手写 `public/sw.js`（只缓存 app 外壳，`/api` 不拦；导航 network-first /
+  静态 cache-first / 不 skipWaiting）+ 图标由 `Web/scripts/make-icons.mjs` 用 server 已装的
+  resvg 生成（零新增依赖）。连接弹窗记住用过的服务器地址（`known-servers.ts`，最近 8 台，点选即填），
+  分享链接里的 `?server=` 一并记忆；顶栏 / 侧边栏抽屉 / FAB 补安全区（safe-area）适配。
+  顺带修复：空白工作区启动分支被 `replaceState` 置空——工作区内容刷新即丢、`?demo` 失效。
+  环境前提：安装与 Service Worker 都要求 https 或 localhost（公网部署时随「云部署」一起上 TLS）
+
 - [x] **本地房间 / 远端房间分离**（`TODO-ff3a66e8`）——核心已落地
   房间分 local（只活本机、永远可编辑、永不联网）与 remote（无写凭证即只读镜像），
   状态按槽隔离；`canEdit` / `canPush` 拆开；「拉取冲突」这条路径整体删除；

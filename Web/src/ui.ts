@@ -147,6 +147,8 @@ export interface GmContext {
   onListRooms: () => Promise<string[]>
   /** 本机缓存的已知房间（含密码），供侧边栏一键切换 */
   knownRooms: KnownRoom[]
+  /** 本机记住的服务器地址（最近使用的在前），连接弹窗里点选即填 */
+  knownServers: string[]
   /** 切换到已知房间：直接用缓存的密码进，不必重输 */
   onSwitchRoom: (entry: KnownRoom) => Promise<RoomResult>
   /** 忘记某个已知房间：只清本机缓存，不动服务器上的房间 */
@@ -1003,6 +1005,19 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
     gm.authed ? `${credLabel}，留空 = 保持当前登录` : credLabel,
   )
 
+  // 已知服务器快捷项：GM 发来的地址第一次填过之后，之后点选即填，不必重敲。
+  // 只填输入框不触发重渲染——与「输入只写状态」同一套焦点保全思路
+  const knownServers = gm.knownServers.filter((s) => s !== gm.serverBase)
+  const serverChips = el('div', 'server-chips')
+  for (const base of knownServers) {
+    const chip = el('button', 'server-chip', base)
+    chip.title = `选用服务器：${base}`
+    chip.addEventListener('click', () => {
+      serverInput.value = base
+    })
+    serverChips.append(chip)
+  }
+
   const actions = el('div', 'modal-actions')
   const connectBtn = el('button', 'tbtn primary', '连接') as HTMLButtonElement
 
@@ -1048,7 +1063,9 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
   }
   actions.append(connectBtn)
 
-  modal.append(hint, serverInput, keyInput, actions)
+  modal.append(hint, serverInput)
+  if (knownServers.length > 0) modal.append(serverChips)
+  modal.append(keyInput, actions)
   // 焦点落在第一个还空着的框上：分离模式先填服务器，已配好时直接输密钥
   ;(serverInput.value ? keyInput : serverInput).focus()
   return backdrop

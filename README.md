@@ -327,6 +327,11 @@ cd ../server && npm install && npm start
   （双击 `file://` 目前不行，见 `TODO-bcb78b27`），  
   通过 `?server=http://IP:2333` URL 参数或连接弹窗（顶栏 `⋯`）里的服务器地址栏指向**任意**后端（一百个服务器连任一，切换时重拉状态）；  
   同源托管（默认）时无需任何配置，行为与原先完全一致
+- **PWA 可安装**：Chrome/Edge/Android 可安装为独立窗口应用（iOS 走「添加到主屏幕」），
+  断网也能启动、继续编辑本地房间；前提是安全上下文（https 或 localhost）。
+  `sw.js` 只缓存 app 外壳——导航请求 network-first、静态资源 cache-first、`/api/*` 一律不拦（见决策记录）。
+  连接弹窗会记住用过的服务器地址（本机最近 8 台，点选即填；分享链接里的 `?server=` 也会被记住）。
+  注意：安装版与浏览器版存储相互独立，安装后首次打开需重新「连接与登录」
 
 ## 快捷键与手势
 
@@ -362,6 +367,9 @@ cd ../server && npm install && npm start
 
 ### 已完成
 
+- [x] **PWA 可安装**（web/pwa）：manifest + 手写 SW（只缓存 app 外壳、`/api` 一律不拦）+ resvg 生成图标（零新增依赖）；
+  连接弹窗记住用过的服务器地址点选即填（`?server=` 分享链接一并记忆）；顶栏/抽屉/FAB 补安全区适配。
+  顺带修复：空白工作区启动被 `replaceState` 置空——工作区内容刷新即丢、`?demo` 失效
 - [x] **本地房间 / 远端房间分离**：房间分 local（永远可编辑、不联网）与 remote（无写凭证即只读镜像）；`canEdit` / `canPush` 已拆开，「拉取冲突」路径整体删除
 - [x] **「另存为本地」**：入口常驻顶栏「更多（⋯）」；把当前远端房间落成本地快照继续干活；重名顺延 `room_name(2)`，记住 origin 便于「提交本地房间」一键回推
 - [x] **bootstrapPull 不再无条件覆盖本地**：本地房间与空白工作区不联网；`bootstrapPull` 只对远端房间运行（server 权威，覆盖即正确语义）
@@ -434,3 +442,13 @@ cd ../server && npm install && npm start
 - **CSS 兜底规则不放会被单点覆盖的属性**：`.modal input:not(...)×5` 的特异性高达
   (0,6,1)，会把 `.fill-input` 这类单类覆盖项 (0,1,0) 打穿。
   需要被覆盖的属性（如 `width`）一律写在同特异性的单类上，靠定义顺序取胜
+- **PWA 只做外壳，不碰业务**：离线能力早已做在应用层（local 房间、另存为本地、断线状态机），
+  Service Worker 只负责「断网也能启动」——导航 network-first、静态资源 cache-first（产物带 hash）。
+  `/api/*` 绝不拦截：同步逻辑（401 与超时分流、退避重试）建立在真实响应上，缓存会整个破坏它。
+  手写 `sw.js`（约百行）而非 vite-plugin-pwa：零依赖哲学不为构建期依赖破例，应用也小到用不上 precache 清单
+- **PWA 更新不打断会话**：不 `skipWaiting`——新版本等下一个会话再接管，正在跑的团不被换掉半截；
+  导航 network-first 保证在线时天然拿到新 index.html，所以只改业务代码时连 sw.js 都不用动
+  （改了 sw.js 才需递增 `VERSION`，activate 时按前缀清理旧缓存）。有等待中的新版本时提示「下次打开生效」
+- **安装版与浏览器版存储独立**：桌面 Chrome/Edge 安装的 PWA 是独立 profile，Android/iOS 主屏应用也是
+  独立 storage——安装版第一次打开要重新「连接与登录」。成本只是一个服务器地址 + 密码，
+  但必须写进文档，避免被当成丢数据的 bug

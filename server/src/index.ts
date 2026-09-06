@@ -161,10 +161,12 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
   try {
     const body = await readFile(filePath)
     // html 不缓存：index.html 引用带 hash 的资源，入口页始终检查最新，避免浏览器缓存旧构建
+    // sw.js 同样不缓存：浏览器靠它感知 Service Worker 更新，被缓存住会卡住整版升级
     const isHtml = extname(filePath) === '.html'
+    const noCache = isHtml || filePath.endsWith('sw.js')
     res.writeHead(200, {
       'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream',
-      ...(isHtml ? { 'Cache-Control': 'no-cache' } : {}),
+      ...(noCache ? { 'Cache-Control': 'no-cache' } : {}),
     })
     res.end(body)
   } catch {
