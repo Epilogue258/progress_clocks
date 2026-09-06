@@ -44,14 +44,7 @@ import {
   rememberLocalRoom,
 } from './local-rooms'
 import { STORAGE_KEY, Store } from './state'
-import {
-  applyTheme,
-  emptyRoomDraft,
-  type GmContext,
-  openRoomDialog,
-  render,
-  type UiState,
-} from './ui'
+import { applyTheme, type GmContext, openRoomDialog, render, type UiState } from './ui'
 
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
 // ?room= 是分享链接，指向的一定是远端房间；本地房间只按记忆恢复（不分享）
@@ -87,14 +80,11 @@ const ui: UiState = {
   sidebarQuery: '',
   gmError: '',
   roomError: '',
-  roomDraft: emptyRoomDraft(),
   sidebarRemoteOpen: true,
   sidebarLocalOpen: true,
   manageRoomDialog: false,
   manageError: '',
-  manageDraft: { name: '', joinPwd: '', gmPwd: '' },
   localRoomDialog: false,
-  localRoomDraft: '',
   localRoomError: '',
   pushLocalDialog: false,
   pushLocalSource: '',
@@ -156,6 +146,10 @@ const sync = new SyncEngine(
   },
   store,
 )
+
+// 会话任何变更（进房 / 退房 / 换服务器 / 凭证增删）都自动重建轮询。
+// 此前靠各操作尾部记得手动 syncPolling——漏调一个就是「改名后轮询还在打旧名字」这类陈旧上下文 bug
+session.subscribe(() => sync.reconfigure())
 
 // ---------- GmContext：ui.ts 只负责展示与收集输入，操作实现在这里 ----------
 
@@ -244,13 +238,11 @@ const gm: GmContext = {
       }
     }
 
-    sync.reconfigure()
     return error ? { ok: false, error } : { ok: true }
   },
   onLogout: () => {
     session.invalidateCredential()
     rerender()
-    sync.reconfigure()
   },
   /** 当前生效的服务器地址（'' = 同源） */
   get serverBase() {
@@ -287,7 +279,6 @@ const gm: GmContext = {
       }
       rememberRoom({ server: session.serverBase, room, joinPwd, gmPwd: effectiveGmPwd })
       rerender()
-      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -307,7 +298,6 @@ const gm: GmContext = {
       sync.resetDirty()
       rememberRoom({ server: session.serverBase, room, joinPwd, gmPwd })
       rerender()
-      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -376,7 +366,6 @@ const gm: GmContext = {
         gmPwd: entry.gmPwd,
       })
       rerender()
-      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       const error = e instanceof ApiError ? e.message : '无法连接该房间'
@@ -636,7 +625,6 @@ function enterLocalRoom(name: string): void {
   sync.resetDirty()
   store.attachSlot(localSlotKey(name))
   rememberLocalRoom(name)
-  sync.reconfigure()
 }
 
 /**
@@ -655,7 +643,6 @@ function leaveRoom(): void {
   store.attachSlot(STORAGE_KEY)
   store.replaceState(createEmptyState())
   rerender()
-  sync.reconfigure()
 }
 
 // ---------- 启动 ----------
@@ -677,7 +664,6 @@ if (!urlReadonly && session.gmKey) {
     // 离线打开远端房间必然校验失败，若据此清空，联网后还得重新输一遍密码
     if (result === 'unauthorized') session.invalidateCredential()
     rerender()
-    sync.reconfigure()
   })
 }
 
@@ -736,7 +722,6 @@ window.addEventListener('keydown', (e) => {
     else if (ui.manageRoomDialog) {
       ui.manageRoomDialog = false
       ui.manageError = ''
-      ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     } else if (ui.roomDialog) ui.roomDialog = false
     else if (ui.creating) ui.creating = false
     else if (ui.gmDialog) {

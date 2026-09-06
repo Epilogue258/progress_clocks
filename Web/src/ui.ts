@@ -33,12 +33,6 @@ export interface UiState {
   roomDialog: boolean
   /** 侧边栏点击预填的房间名（只在弹窗没被填过时生效） */
   roomPrefill: string
-  /**
-   * 房间弹窗里用户正在填的内容（区别于 roomPrefill 的预填值）。
-   * 存进状态是因为连接失败后要整体重渲染来显示错误，
-   * 草稿不落状态的话，一次报错就会把三个框清空。
-   */
-  roomDraft: { name: string; joinPwd: string; gmPwd: string }
   /** 侧边栏展开开关（汉堡菜单） */
   sidebarOpen: boolean
   /** 顶栏「更多」菜单展开（低频操作收在这里，顶栏才不会挤成一排） */
@@ -57,12 +51,8 @@ export interface UiState {
   manageRoomDialog: boolean
   /** 房间管理弹窗的提示文案 */
   manageError: string
-  /** 房间管理弹窗草稿：名字 / 访问密码 / GM 密码（留空 = 不更改；报错重渲染时不丢） */
-  manageDraft: { name: string; joinPwd: string; gmPwd: string }
   /** 新建本地房间弹窗 */
   localRoomDialog: boolean
-  /** 新建本地房间弹窗的草稿名 */
-  localRoomDraft: string
   /** 新建本地房间弹窗的提示文案 */
   localRoomError: string
   /** 「提交本地房间」（本地 → 远端 force push）弹窗 */
@@ -86,19 +76,13 @@ export type Rerender = () => void
 /**
  * 打开房间弹窗的唯一切入口。
  * 四个调用点（顶栏 / 侧边栏 / 分离模式进页面 / 私有房间 401）如果各自设 roomDialog，
- * 就都得记得顺手清掉上一次的错误提示和草稿，漏一个就会看到上一条残留。
- * 草稿在这里清空而不是在 close() 里：失败重渲染时草稿要留着，只在重新打开时归零。
+ * 就都得记得顺手清掉上一次的错误提示，漏一个就会看到上一条残留。
+ * 输入内容的保留不归这里管——重渲染保焦保值（见 render）已兜住，重新打开自然是干净预填。
  */
 export function openRoomDialog(ui: UiState, prefill = ''): void {
   ui.roomDialog = true
   ui.roomPrefill = prefill
   ui.roomError = ''
-  ui.roomDraft = { name: '', joinPwd: '', gmPwd: '' }
-}
-
-/** 新建一个空草稿 */
-export function emptyRoomDraft(): UiState['roomDraft'] {
-  return { name: '', joinPwd: '', gmPwd: '' }
 }
 
 /** 房间操作结果 */
@@ -214,6 +198,57 @@ export function toggleTheme(): 'dark' | 'light' {
 
 // ---------- 渲染 ----------
 
+/**
+ * 上一次渲染写到各 keyed 输入框的值。恢复判据全靠它：
+ * 新渲染写的值 == 上一次的值 → 应用没动过这个框，用户打了一半的字该保住；
+ * 不等 → 应用主动改了（预填变化 / 重新打开弹窗），尊重新值，绝不打架。
+ */
+const lastRenderedValues = new Map<string, string>()
+
+interface SavedInput {
+  value: string
+  start: number | null
+  end: number | null
+  focused: boolean
+}
+
+/** 重渲染前快照所有 keyed 输入框（不止焦点框：点「提交」后焦点在按钮上，报错重渲染时打了一半的字也要保住） */
+function captureKeyedInputs(root: HTMLElement): Map<string, SavedInput> {
+  const out = new Map<string, SavedInput>()
+  for (const input of root.querySelectorAll<HTMLInputElement>('input[data-persist-key]')) {
+    const key = input.dataset.persistKey
+    if (!key) continue
+    out.set(key, {
+      value: input.value,
+      start: input.selectionStart,
+      end: input.selectionEnd,
+      focused: input === document.activeElement,
+    })
+  }
+  return out
+}
+
+function restoreKeyedInputs(root: HTMLElement, saved: Map<string, SavedInput>): void {
+  for (const input of root.querySelectorAll<HTMLInputElement>('input[data-persist-key]')) {
+    const key = input.dataset.persistKey
+    if (!key) continue
+    const prev = saved.get(key)
+    if (prev && input.value === lastRenderedValues.get(key)) {
+      input.value = prev.value
+      if (
+        prev.focused &&
+        prev.start !== null &&
+        prev.end !== null &&
+        (input.type === 'text' || input.type === 'password')
+      ) {
+        input.focus()
+        input.setSelectionRange(prev.start, prev.end)
+      }
+    }
+    lastRenderedValues.set(key, input.value)
+  }
+}
+
 export function render(
   root: HTMLElement,
   store: Store,
@@ -222,6 +257,7 @@ export function render(
   rerender: Rerender,
   gm: GmContext,
 ): void {
+  const saved = captureKeyedInputs(root)
   root.textContent = ''
   root.append(renderTopbar(store, ui, readonly, rerender, gm))
   // 断线横幅：只在远端房间显示（本地房间 / 空白工作区不联网，无此状态）
@@ -273,6 +309,7 @@ export function render(
   if (ui.shortcuts) {
     root.append(renderShortcutsModal(ui, rerender))
   }
+  restoreKeyedInputs(root, saved)
 }
 
 /** 断线横幅：重试中 / 离线提示 + 手动「重试」按钮（只由 render 在远端房间且非 reachable 时挂载） */
@@ -308,17 +345,23 @@ function el(tag: string, className: string, text?: string): HTMLElement {
  * 此前各处手写 createElement('input') 再逐个设属性，
  * 一旦 CSS 选择器漏掉某个 type（比如 password）就会掉回浏览器默认外观。
  * type='color' 不挂该类（取色器有自己的尺寸规则）。
+ *
+ * persistKey：给「用户打了一半、不能被重渲染冲掉」的框标一个稳定键
+ * （房间名 / 密码 / 服务器地址这类），render 据此保焦保值；
+ * 应用自己会程序化回写的框（滑条联动 / hex 校验回写）不要标，避免恢复打架。
  */
 function makeInput(
   type: 'text' | 'password' | 'number' | 'color',
   placeholder = '',
   value = '',
+  persistKey = '',
 ): HTMLInputElement {
   const input = document.createElement('input')
   input.type = type
   if (type !== 'color') input.className = 'text-input'
   if (placeholder) input.placeholder = placeholder
   if (value) input.value = value
+  if (persistKey) input.dataset.persistKey = persistKey
   input.autocomplete = 'off'
   return input
 }
@@ -386,7 +429,6 @@ function renderTopbar(
     if (gm.roomName) {
       ui.manageRoomDialog = true
       ui.manageError = ''
-      ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     } else {
       ui.sidebarOpen = true
     }
@@ -984,12 +1026,15 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
     'text',
     '服务器地址（留空 = 同源，如 http://192.168.1.10:2333）',
     gm.serverBase,
+    'gm-server',
   )
   const credLabel = gm.roomName ? 'GM 密码（写权限）' : 'GM 密钥'
   const keyInput = makeInput(
     'password',
     // 已登录时留空 = 保留当前凭证，只换服务器；重新填 = 换凭证
     gm.authed ? `${credLabel}，留空 = 保持当前登录` : credLabel,
+    '',
+    'gm-key',
   )
 
   // 已知服务器快捷项：GM 发来的地址第一次填过之后，之后点选即填，不必重敲。
@@ -1078,25 +1123,21 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
     `服务器：${gm.serverBase || '同源（当前站点）'}（改服务器：顶栏 ⋯ →「${CONNECT_MENU_LABEL}」）`,
   )
 
-  // 三个框的值都优先取草稿：报错后整体重渲染时，用户填的东西不能被冲掉
-  const draft = ui.roomDraft
-  const roomInput = makeInput('text', '房间名', draft.name || ui.roomPrefill || gm.roomName)
+  // 打了一半的内容不用存状态：重渲染保焦保值（persistKey）兜住——
+  // 报错重渲染、轮询触发的重渲染都不会冲掉输入框
+  const roomInput = makeInput('text', '房间名', ui.roomPrefill || gm.roomName, 'room-name')
   const pwdInput = makeInput(
     'password',
     '加入密码（可留空 = 公开房间，发给玩家）',
-    draft.joinPwd || gm.roomJoinPwd,
+    gm.roomJoinPwd,
+    'room-join',
   )
-  const gmInput = makeInput('password', 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）', draft.gmPwd)
-  // 输入只写状态、不触发重渲染，否则每敲一个字都会重建输入框、焦点就没了
-  roomInput.addEventListener('input', () => {
-    ui.roomDraft.name = roomInput.value
-  })
-  pwdInput.addEventListener('input', () => {
-    ui.roomDraft.joinPwd = pwdInput.value
-  })
-  gmInput.addEventListener('input', () => {
-    ui.roomDraft.gmPwd = gmInput.value
-  })
+  const gmInput = makeInput(
+    'password',
+    'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）',
+    '',
+    'room-gm',
+  )
 
   const actions = el('div', 'modal-actions')
   const joinBtn = el('button', 'tbtn primary', '加入房间')
@@ -1153,7 +1194,6 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
   const { backdrop, modal, close } = modalShell('房间管理', () => {
     ui.manageRoomDialog = false
     ui.manageError = ''
-    ui.manageDraft = { name: '', joinPwd: '', gmPwd: '' }
     rerender()
   })
 
@@ -1171,12 +1211,11 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
   )
 
   // 房间名字（留空不更改）：改名保留内容与密码，玩家需换新仓库
-  const nameInput = makeInput('text', `当前：${gm.roomName}（留空不更改）`, ui.manageDraft.name)
+  const nameInput = makeInput('text', `当前：${gm.roomName}（留空不更改）`, '', 'manage-name')
   nameInput.maxLength = 40
   nameInput.addEventListener('input', () => {
-    ui.manageDraft.name = nameInput.value
     // 局部刷新警告框（不整弹窗重渲染，避免输入框失焦）
-    const name = ui.manageDraft.name.trim()
+    const name = nameInput.value.trim()
     if (!name || name === gm.roomName) {
       warn.textContent = ''
     } else {
@@ -1189,16 +1228,19 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
   modal.append(el('div', 'field', '房间名字'), nameInput)
 
   // 访问密码 / GM 密码：仅远端房间有（本地房间是纯本地草稿，没有仓库密码可改）
-  if (!gm.roomLocal) {
-    const joinInput = makeInput('password', '新加入密码（留空不更改）', ui.manageDraft.joinPwd)
-    joinInput.addEventListener('input', () => {
-      ui.manageDraft.joinPwd = joinInput.value
-    })
-    const gmInput = makeInput('password', '新 GM 密码（留空不更改，≥6 位）', ui.manageDraft.gmPwd)
-    gmInput.addEventListener('input', () => {
-      ui.manageDraft.gmPwd = gmInput.value
-    })
-    modal.append(el('div', 'field', '访问密码'), joinInput, el('div', 'field', 'GM 密码'), gmInput)
+  const joinInput = gm.roomLocal
+    ? undefined
+    : makeInput('password', '新加入密码（留空不更改）', '', 'manage-join')
+  const gmPwdInput = gm.roomLocal
+    ? undefined
+    : makeInput('password', '新 GM 密码（留空不更改，≥6 位）', '', 'manage-gm')
+  if (joinInput && gmPwdInput) {
+    modal.append(
+      el('div', 'field', '访问密码'),
+      joinInput,
+      el('div', 'field', 'GM 密码'),
+      gmPwdInput,
+    )
   }
 
   const actions = el('div', 'modal-actions')
@@ -1249,9 +1291,9 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
   if (gm.roomLocal || gm.authed) {
     const saveBtn = el('button', 'tbtn primary', '保存') as HTMLButtonElement
     const save = async (): Promise<void> => {
-      const name = ui.manageDraft.name.trim()
-      const join = ui.manageDraft.joinPwd.trim()
-      const gmpwd = ui.manageDraft.gmPwd.trim()
+      const name = nameInput.value.trim()
+      const join = joinInput?.value.trim() ?? ''
+      const gmpwd = gmPwdInput?.value.trim() ?? ''
       if (!name && !join && !gmpwd) {
         ui.manageError = '没有要保存的更改'
         rerender()
@@ -1299,16 +1341,12 @@ function renderLocalRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): H
   const { backdrop, modal, close } = modalShell('新建本地房间', () => {
     ui.localRoomDialog = false
     ui.localRoomError = ''
-    ui.localRoomDraft = ''
     rerender()
   })
 
   const hint = el('div', 'gm-hint', ui.localRoomError)
-  const nameInput = makeInput('text', '房间名（如：草稿）', ui.localRoomDraft)
+  const nameInput = makeInput('text', '房间名（如：草稿）', '', 'local-room-name')
   nameInput.maxLength = 40
-  nameInput.addEventListener('input', () => {
-    ui.localRoomDraft = nameInput.value
-  })
 
   const actions = el('div', 'modal-actions')
   const cancelBtn = el('button', 'tbtn', '取消')
@@ -1633,7 +1671,6 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
       e.stopPropagation()
       ui.localRoomDialog = true
       ui.localRoomError = ''
-      ui.localRoomDraft = ''
       rerender()
     })
     localHeader.append(localAdd)
