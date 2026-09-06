@@ -18,7 +18,7 @@
   --field-bg: #f2f0eb;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #141414;
   --card: #2a2a2a; /* 提亮：与 bg 拉开对比，按钮/卡片不再隐形 */
@@ -46,8 +46,10 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  transition: background 0.3s, color 0.3s;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  transition:
+    background 0.3s,
+    color 0.3s;
 }
 
 #app {
@@ -99,7 +101,9 @@ body {
   justify-content: center;
   white-space: nowrap;
   flex-shrink: 0; /* 防止被 flex 压缩 */
-  transition: background 0.2s, opacity 0.2s;
+  transition:
+    background 0.2s,
+    opacity 0.2s;
 }
 
 .tbtn:hover {
@@ -193,7 +197,7 @@ body {
   border-radius: 8px;
   background: var(--field-bg);
   color: var(--text);
-  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
   font-weight: 700;
   text-align: center;
@@ -469,7 +473,7 @@ body.drag-active {
   color: var(--accent-text);
 }
 
-.max-picker input[type='number'] {
+.max-picker input[type="number"] {
   flex: 1;
   width: auto;
 }
@@ -591,7 +595,10 @@ body.drag-active {
    此前只列出了 text / number，password 掉回浏览器默认样式（白底、不同字号与内边距），
    看着像另一个组件。改成「除滑块/取色器/勾选框外一律适用」，以后新增 type 不会再漏。 */
 .text-input,
-.modal input:not([type='range']):not([type='color']):not([type='checkbox']):not([type='radio']):not([type='file']) {
+.modal
+  input:not([type="range"]):not([type="color"]):not([type="checkbox"]):not([type="radio"]):not(
+    [type="file"]
+  ) {
   appearance: none;
   border: none;
   outline: none;
@@ -624,7 +631,7 @@ body.drag-active {
 }
 
 .text-input:focus,
-.modal input:not([type='range']):focus {
+.modal input:not([type="range"]):focus {
   box-shadow: 0 0 0 2px var(--text-dim);
 }
 
@@ -634,7 +641,7 @@ body.drag-active {
   gap: 12px;
 }
 
-.fill-row input[type='range'] {
+.fill-row input[type="range"] {
   flex: 1;
   min-width: 0; /* 允许收缩，否则滑块自身固有宽度会把数字框挤出去 */
   accent-color: var(--accent);
@@ -721,6 +728,7 @@ body.drag-active {
   font-variant-numeric: tabular-nums;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: 顺序是有意的——.modal-center 的居中靠更高特异性取胜（见 README 决策记录「CSS 兜底规则」） */
 .modal-actions {
   display: flex;
   justify-content: space-between;

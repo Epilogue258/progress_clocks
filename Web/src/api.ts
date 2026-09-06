@@ -1,15 +1,17 @@
 import type { ClockState } from '../../common/types'
 
 /**
- * 服务端 API 客户端（契约见 server/README.md）：
+ * 服务端 API 客户端（契约见 server/README.md）。
+ * 只封装 Web 端实际用到的接口——默认房间仅剩只读轮询与 GM 登录（写入走房间接口）：
  *
- * GET  /api/state        -> 完整状态 JSON（公开）
- * POST /api/state        -> 全量覆盖保存（需 GM 密钥；带 version 走乐观锁）
- * GET  /api/auth-check   -> 密钥验证（GM 登录）
- * GET  /api/export.png   -> 整张导出图 PNG（公开）
+ * GET  /api/state             -> 完整状态 JSON（pollState 在无房间时轮询用）
+ * GET  /api/auth-check        -> GM 密钥验证
+ * GET/POST/PATCH/DELETE
+ *      /api/room/<name>/...   -> 房间读写（见下方房间一节）
  *
- * 鉴权：写操作需 Authorization: Bearer <GM_KEY>（由服务器 GM_KEY 环境变量决定是否启用）
- * 冲突：POST 时 version 与服务器不一致 -> 409 + 最新状态（ApiError.latest）
+ * 鉴权：Authorization: Bearer <密码>，按接口带加入密码 / GM 密码 / GM_KEY。
+ * 409 + 最新状态（ApiError.latest）保留给仍带 version 的第三方客户端（QQ Bot）；
+ * 本客户端的推送不带 version（force push），不会触发。
  */
 
 /** API 错误：带 HTTP 状态码；409 时附带服务器最新状态 */
@@ -33,27 +35,6 @@ export async function fetchState(baseUrl: string): Promise<ClockState> {
   const res = await fetch(`${baseUrl}/api/state`)
   if (!res.ok) throw new ApiError(res.status, `获取状态失败: ${res.status}`)
   return (await res.json()) as ClockState
-}
-
-/** 全量保存（GM 端）：带密钥鉴权；state.version = 客户端当前看到的版本（乐观锁）
- *  返回服务器保存后的新版本号，调用方用于更新本地同步基线 */
-export async function saveState(
-  baseUrl: string,
-  state: ClockState,
-  key?: string,
-): Promise<number> {
-  const res = await fetch(`${baseUrl}/api/state`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
-    body: JSON.stringify(state),
-  })
-  if (res.status === 409) {
-    const body = (await res.json()) as { state?: ClockState }
-    throw new ApiError(409, '冲突：状态已在别处更新', body.state)
-  }
-  if (!res.ok) throw new ApiError(res.status, `保存失败: ${res.status}`)
-  const body = (await res.json()) as { version?: number }
-  return body.version ?? 0
 }
 
 /**
@@ -112,7 +93,11 @@ export async function createRoom(
 }
 
 /** 拉取房间状态（需加入密码；空 = 公开只读房间） */
-export async function fetchRoomState(baseUrl: string, room: string, joinPwd: string): Promise<ClockState> {
+export async function fetchRoomState(
+  baseUrl: string,
+  room: string,
+  joinPwd: string,
+): Promise<ClockState> {
   const res = await fetch(`${baseUrl}/api/room/${encodeURIComponent(room)}/state`, {
     headers: joinPwd ? roomHeaders(joinPwd) : {},
   })

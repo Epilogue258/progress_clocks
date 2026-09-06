@@ -94,9 +94,7 @@ export function buildExportSvg(state: ClockState): string {
   clocks.forEach((clock, i) => {
     const col = i % cols
     const row = Math.floor(i / cols)
-    parts.push(
-      clockGroup(clock, PAD + col * CELL + CELL / 2, HEADER + row * CELL + CELL / 2),
-    )
+    parts.push(clockGroup(clock, PAD + col * CELL + CELL / 2, HEADER + row * CELL + CELL / 2))
   })
 
   parts.push('</svg>')

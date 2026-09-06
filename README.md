@@ -39,7 +39,7 @@
 
 **网团场景**：跑团进行中，Bot 收到 `/clock 2/4 穿过守卫` → 注册/更新进度钟 → `/clock show` → 发送进度钟全景图到群里。API 只提供原语（读/写状态、导出图片），命令解析在 Bot 侧，灵活演进。
 
-**技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。
+**技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一运行时依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。开发期工具：根目录 `npm run lint`（Biome 管 lint + 格式，配置在 `biome.json`，风格不再靠手保持——无分号、单引号、尾逗号、100 列）。
 
 **代码在哪**：最主要的文件是 `Web/src/ui.ts`（全部渲染与手势），其余都是围绕它的工具文件
 ——`main.ts` 编排同步与交互、`state.ts` 管状态与撤销栈、`api.ts` 封装 HTTP，`server/` 只是个可选的同步端。
@@ -226,6 +226,9 @@ GM 完全可能持有正确的 `joinPwd` 和过期的 `gmPwd`——这时应当�
 ## 快速开始
 
 ```bash
+# 0.（开发机一次性）根目录装 Biome：lint + 格式化（提交前跑 npm run lint）
+cd progress_clocks && npm install
+
 # 1. 构建 Web 前端（产物 Web/dist 由 server 托管）
 cd Web && npm install && npm run build
 
@@ -367,6 +370,9 @@ cd ../server && npm install && npm start
 
 ### 已完成
 
+- [x] **凭证清理归一化 + Biome 机器兜底**（web/refactor）：GM 凭证清理五处重复收进 `invalidateGmCredential()`；
+  切换房间验出密码失效时 known-rooms 写凭证一并抹掉；删除 `api.ts` 死代码 `saveState`；
+  server 元数据加结构校验、`renameRoom` 先读后改；根目录 `npm run lint`（Biome，风格与手写一致）
 - [x] **PWA 可安装**（web/pwa）：manifest + 手写 SW（只缓存 app 外壳、`/api` 一律不拦）+ resvg 生成图标（零新增依赖）；
   连接弹窗记住用过的服务器地址点选即填（`?server=` 分享链接一并记忆）；顶栏/抽屉/FAB 补安全区适配。
   顺带修复：空白工作区启动被 `replaceState` 置空——工作区内容刷新即丢、`?demo` 失效
@@ -439,6 +445,11 @@ cd ../server && npm install && npm start
   `await` 回来时手上的节点可能已是孤儿，错误提示写进去用户看不见。
   弹窗提示（`gmError` / `roomError`）和输入草稿（`roomDraft`）都落进状态跟着一起重画，
   重渲染由调用方在异步结束后统一触发一次
+- **凭证清理统一入口**：清 GM 写凭证 = `gmKey` / `gmAuthed` 复位 + 本机记忆删除 + （可选）一条 toast，
+  收进 `main.ts` 的 `invalidateGmCredential()`——此前推送 401 / 改名 401 / 提交本地房间 401 /
+  启动复验失败 / 退出房间各写一遍，漏掉任何一步（登录态没复位、localStorage 残留）表现各异且难排查。
+  注意 `dropGmKey()` 按当前 `roomName` 选要删的键，所以 `leaveRoom` 必须先清凭证再清房间名；
+  known-rooms 缓存的按房间条目不在入口内，由调用方决定是否抹掉（切换房间验出密码失效时一并抹，见决策「只缓存验证通过的 GM 密码」）
 - **CSS 兜底规则不放会被单点覆盖的属性**：`.modal input:not(...)×5` 的特异性高达
   (0,6,1)，会把 `.fill-input` 这类单类覆盖项 (0,1,0) 打穿。
   需要被覆盖的属性（如 `width`）一律写在同特异性的单类上，靠定义顺序取胜

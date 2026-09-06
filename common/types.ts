@@ -26,6 +26,7 @@ export function clampInt(value: number, lo: number, hi: number): number {
 /** 房间名白名单：任意非路径分隔符/控制字符/Windows 保留字符，1-32 字符。
  * 允许中文/@/空格等自然语言（如「龙与地下城@咖啡的房间」），
  * 防目录穿越的关键是排除 / \ 与 Windows 保留字符（<>:"|?*），另排除 . 与 .. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: 控制字符是刻意排除的——房间名本就不允许 \x00-\x1f，这条正则干的就是这个
 const ROOM_NAME_RE = /^[^/\\<>:"|?*\x00-\x1f]{1,32}$/u
 
 export function isValidRoomName(name: unknown): name is string {

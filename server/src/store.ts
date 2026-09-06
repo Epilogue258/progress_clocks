@@ -7,7 +7,15 @@
  * - 乐观锁：saveState 接收期望版本，不一致时拒绝并返回最新状态（多写冲突检测）
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { ClockState } from '../../common/types.ts'
@@ -47,9 +55,7 @@ export function loadState(room?: string): ClockState {
   }
 }
 
-export type SaveResult =
-  | { ok: true; state: ClockState }
-  | { ok: false; current: ClockState }
+export type SaveResult = { ok: true; state: ClockState } | { ok: false; current: ClockState }
 
 /**
  * 保存状态（原子写入 + 二次校验）。
@@ -66,7 +72,7 @@ export function saveState(state: ClockState, expectedVersion?: number, room?: st
   parsed.version = (current.version ?? 0) + 1
   const file = room ? roomStateFile(room) : DEFAULT_DATA_FILE
   mkdirSync(dirname(file), { recursive: true })
-  const tmp = file + '.tmp'
+  const tmp = `${file}.tmp`
   writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf-8')
   renameSync(tmp, file)
   return { ok: true, state: parsed }
@@ -103,7 +109,8 @@ export function updateRoomMeta(
 ): UpdateRoomMetaResult {
   const meta = loadRoomMeta(name)
   if (!meta) return { ok: false, reason: 'not-found' }
-  if (patch.gmPwd !== undefined && patch.gmPwd.length < 6) return { ok: false, reason: 'weak-gm-pwd' }
+  if (patch.gmPwd !== undefined && patch.gmPwd.length < 6)
+    return { ok: false, reason: 'weak-gm-pwd' }
   const next: RoomMeta = { ...meta }
   if (patch.joinPwd !== undefined) next.joinPwd = patch.joinPwd
   if (patch.gmPwd !== undefined) next.gmPwd = patch.gmPwd
@@ -130,24 +137,37 @@ export type RenameRoomResult =
  */
 export function renameRoom(name: string, newName: string): RenameRoomResult {
   if (!isValidRoomName(newName)) return { ok: false, reason: 'invalid-name' }
-  if (!isValidRoomName(name)) return { ok: false, reason: 'not-found' }
-  const src = join(ROOMS_DIR, name)
-  if (!existsSync(src)) return { ok: false, reason: 'not-found' }
+  // 元数据先读后改：损坏的 meta 在改名前就拒绝，避免目录已改名、元数据却没跟上的半截状态
+  const meta = loadRoomMeta(name)
+  if (!meta) return { ok: false, reason: 'not-found' }
   const dst = join(ROOMS_DIR, newName)
   if (existsSync(dst)) return { ok: false, reason: 'exists' }
-  renameSync(src, dst)
-  const metaFile = roomMetaFile(newName)
-  const meta = JSON.parse(readFileSync(metaFile, 'utf-8')) as RoomMeta
-  meta.name = newName
-  writeFileSync(metaFile, JSON.stringify(meta, null, 2), 'utf-8')
-  return { ok: true, room: meta }
+  renameSync(join(ROOMS_DIR, name), dst)
+  const next: RoomMeta = { ...meta, name: newName }
+  writeFileSync(roomMetaFile(newName), JSON.stringify(next, null, 2), 'utf-8')
+  return { ok: true, room: next }
 }
 
-/** 读取房间元数据（含密码）；不存在或非法名返回 null */
+/** meta.json 结构校验：字段缺失或类型不对按损坏处理——
+ * 手改文件 / 写一半崩溃时不至于把坏数据当凭证用（gmPwd 类型不对会让 401 比较恒假或恒真） */
+function parseRoomMeta(raw: unknown): RoomMeta | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.name !== 'string' || typeof o.gmPwd !== 'string') return null
+  return {
+    name: o.name,
+    // joinPwd 可空（公开房间）；旧版本文件缺该字段时按公开处理
+    joinPwd: typeof o.joinPwd === 'string' ? o.joinPwd : '',
+    gmPwd: o.gmPwd,
+    createdAt: typeof o.createdAt === 'number' ? o.createdAt : 0,
+  }
+}
+
+/** 读取房间元数据（含密码）；不存在、非法名或结构不对返回 null */
 export function loadRoomMeta(name: string): RoomMeta | null {
   if (!isValidRoomName(name)) return null
   try {
-    return JSON.parse(readFileSync(roomMetaFile(name), 'utf-8')) as RoomMeta
+    return parseRoomMeta(JSON.parse(readFileSync(roomMetaFile(name), 'utf-8')))
   } catch {
     return null
   }

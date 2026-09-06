@@ -10,9 +10,7 @@
  * - server 不可达：保持本地 localStorage 数据，离线可用
  */
 import './styles.css'
-import { Store, STORAGE_KEY } from './state'
-import { applyTheme, emptyRoomDraft, openRoomDialog, render, type GmContext, type UiState } from './ui'
-import { createEmptyState, isValidRoomName, type ClockState } from '../../common/types'
+import { type ClockState, createEmptyState, isValidRoomName } from '../../common/types'
 import {
   ApiError,
   changeRoomPwd,
@@ -24,11 +22,11 @@ import {
   renameRoom,
   saveRoomState,
   saveRoomStateForce,
+  type VerifyResult,
   verifyKey,
   verifyRoomKey,
-  type VerifyResult,
 } from './api'
-import { forgetRoom, loadKnownRooms, rememberRoom, type KnownRoom } from './known-rooms'
+import { forgetRoom, type KnownRoom, loadKnownRooms, rememberRoom } from './known-rooms'
 import { loadKnownServers, rememberServer } from './known-servers'
 import {
   clearLocalState,
@@ -40,6 +38,15 @@ import {
   nextLocalName,
   rememberLocalRoom,
 } from './local-rooms'
+import { STORAGE_KEY, Store } from './state'
+import {
+  applyTheme,
+  emptyRoomDraft,
+  type GmContext,
+  openRoomDialog,
+  render,
+  type UiState,
+} from './ui'
 
 // server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
 // 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
@@ -78,7 +85,8 @@ let roomName = roomFromUrl ?? localStorage.getItem(ROOM_STORAGE) ?? ''
 let roomLocal = !roomFromUrl && localStorage.getItem(ROOM_TYPE_STORAGE) === 'local'
 let roomJoinPwd = localStorage.getItem(ROOM_JOIN_STORAGE) ?? ''
 
-const root = document.getElementById('app')!
+const root = document.getElementById('app')
+if (!root) throw new Error('找不到 #app 挂载点')
 applyTheme()
 
 const store = new Store()
@@ -125,7 +133,9 @@ const ui: UiState = {
 // ---------- GM 鉴权状态 ----------
 
 // 房间模式：gmKey = GM 密码（写凭证）；默认房间：GM_KEY
-let gmKey: string | null = roomName ? localStorage.getItem(ROOM_GM_STORAGE) : localStorage.getItem(GM_KEY_STORAGE)
+let gmKey: string | null = roomName
+  ? localStorage.getItem(ROOM_GM_STORAGE)
+  : localStorage.getItem(GM_KEY_STORAGE)
 let gmAuthed = roomName ? !!gmKey : false
 /** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
 let dirty = false
@@ -177,6 +187,19 @@ function dropGmKey(): void {
   localStorage.removeItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE)
 }
 
+/**
+ * 丢弃 GM 写凭证并复位登录态：gmKey / gmAuthed 清零 + 本机记忆删除，可选带一条 toast。
+ * 清理序列的统一入口——此前推送 401 / 改名 401 / 提交本地房间 401 / 启动复验失败
+ * 各写一遍，漏掉任何一步（gmAuthed 没复位、或 localStorage 残留）表现各异且难排查。
+ * 只清「当前房间 / 工作区」这一份凭证；known-rooms 缓存的按房间条目由调用方决定是否抹掉。
+ */
+function invalidateGmCredential(toast?: string): void {
+  gmKey = null
+  gmAuthed = false
+  dropGmKey()
+  if (toast) showToast(toast)
+}
+
 /** 对着当前服务器校验凭证：远端房间验 GM 密码，空白工作区验 GM_KEY，本地房间无需凭证 */
 function checkGmKey(key: string): Promise<VerifyResult> {
   if (roomLocal) return Promise.resolve('ok' as VerifyResult)
@@ -190,10 +213,7 @@ if (!urlReadonly && gmKey) {
     gmAuthed = result === 'ok'
     // 只有服务器明确说「凭证不对」才丢弃。连不上时保留：
     // 离线打开远端房间必然校验失败，若据此清空，联网后还得重新输一遍密码
-    if (result === 'unauthorized') {
-      gmKey = null
-      dropGmKey()
-    }
+    if (result === 'unauthorized') invalidateGmCredential()
     rerender()
     syncPolling()
   })
@@ -265,10 +285,7 @@ const gm: GmContext = {
     } else if (serverChanged && gmKey) {
       const result = await checkGmKey(gmKey)
       gmAuthed = result === 'ok'
-      if (result === 'unauthorized') {
-        gmKey = null
-        dropGmKey()
-      }
+      if (result === 'unauthorized') invalidateGmCredential()
     }
 
     // 换了服务器才重拉；拉到就把 dirty 归零——本地已与服务端一致
@@ -320,7 +337,11 @@ const gm: GmContext = {
           effectiveGmPwd = gmPwd
           localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
         } else {
-          showToast(result === 'unauthorized' ? 'GM 密码错误，已以只读身份进入' : '未能验证 GM 密码，已以只读身份进入')
+          showToast(
+            result === 'unauthorized'
+              ? 'GM 密码错误，已以只读身份进入'
+              : '未能验证 GM 密码，已以只读身份进入',
+          )
         }
       }
       rememberRoom({ server: API_BASE, room, joinPwd, gmPwd: effectiveGmPwd })
@@ -393,8 +414,18 @@ const gm: GmContext = {
         gmAuthed = result === 'ok'
         if (result === 'ok') localStorage.setItem(ROOM_GM_STORAGE, entry.gmPwd)
         // 没问出结果（连不上 / 服务端出错）时保留缓存的密码，下次切换还能再试；
-        // 只有服务器明确说不对才抹掉，免得一次抖动就丢掉凭证
-        else if (result === 'unauthorized') localStorage.removeItem(ROOM_GM_STORAGE)
+        // 只有服务器明确说不对才丢——known-rooms 里的写凭证一并抹掉，
+        // 否则「可编辑」标签继续挂着失效密码，下次切换照样无声失败（决策：只缓存验证通过的 GM 密码）
+        else if (result === 'unauthorized') {
+          invalidateGmCredential()
+          forgetRoom(entry.server, entry.room)
+          rememberRoom({
+            server: entry.server,
+            room: entry.room,
+            joinPwd: entry.joinPwd,
+            gmPwd: '',
+          })
+        }
       } else {
         gmKey = null
         gmAuthed = false
@@ -524,7 +555,7 @@ const gm: GmContext = {
     const state = loadLocalState(name)
     // 已有房间的写凭证：本机缓存过 GM 密码就用它，否则退回当前登录凭证
     const cached = loadKnownRooms().find((r) => r.server === API_BASE && r.room === room)
-    const pwd = (cached && cached.gmPwd) || gmKey || ''
+    const pwd = cached?.gmPwd || gmKey || ''
     if (!pwd) {
       return { ok: false as const, error: `没有「${room}」的 GM 密码，请先以 GM 身份进入该房间` }
     }
@@ -540,12 +571,11 @@ const gm: GmContext = {
       if (e instanceof ApiError && e.status === 401) {
         // GM 密码失效：本机缓存不可信，清掉这条房间的写凭证；若当前正以它登录，一并登出
         forgetRoom(API_BASE, room)
-        if (roomName === room && !roomLocal) {
-          gmKey = null
-          gmAuthed = false
-          localStorage.removeItem(ROOM_GM_STORAGE)
+        if (roomName === room && !roomLocal) invalidateGmCredential()
+        return {
+          ok: false as const,
+          error: `「${room}」的 GM 密码无效，请重新以 GM 身份进入后再试`,
         }
-        return { ok: false as const, error: `「${room}」的 GM 密码无效，请重新以 GM 身份进入后再试` }
       }
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
@@ -581,9 +611,7 @@ const gm: GmContext = {
       await renameRoom(API_BASE, roomName, gmKey ?? '', next)
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        gmKey = null
-        gmAuthed = false
-        localStorage.removeItem(ROOM_GM_STORAGE)
+        invalidateGmCredential()
         return { ok: false as const, error: 'GM 密码无效，请重新登录后再改名' }
       }
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -593,7 +621,12 @@ const gm: GmContext = {
     const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === oldName)
     if (entry) {
       forgetRoom(API_BASE, oldName)
-      rememberRoom({ server: entry.server, room: next, joinPwd: entry.joinPwd, gmPwd: entry.gmPwd })
+      rememberRoom({
+        server: entry.server,
+        room: next,
+        joinPwd: entry.joinPwd,
+        gmPwd: entry.gmPwd,
+      })
     }
     // 指向旧名的本地副本（另存为本地）来源记录跟着改成新名，回推目标不失效
     for (const local of listLocalRooms()) {
@@ -690,20 +723,19 @@ function enterLocalRoom(name: string): void {
  * 写凭证一并清掉——远端房间的 GM 密码与空白工作区无关。
  */
 function leaveRoom(): void {
+  // 凭证先清——roomName 还在，invalidateGmCredential 才能选对要删的本机键；随后再清房间记忆
+  invalidateGmCredential()
   roomName = ''
   roomLocal = false
   roomJoinPwd = ''
   localStorage.removeItem(ROOM_STORAGE)
   localStorage.removeItem(ROOM_JOIN_STORAGE)
-  localStorage.removeItem(ROOM_GM_STORAGE)
   localStorage.removeItem(ROOM_TYPE_STORAGE)
   const params = new URLSearchParams(location.search)
   params.delete('room')
   const qs = params.toString()
   history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
 
-  gmKey = null
-  gmAuthed = false
   dirty = false
   // 空白工作区是干净起步：先切回全局槽，再置空（不留上一个远端房间的缓存）
   store.attachSlot(STORAGE_KEY)
@@ -798,15 +830,8 @@ async function pushNow(): Promise<void> {
         // 拉取失败静默
       }
     } else if (e instanceof ApiError && e.status === 401) {
-      // GM 密码失效：清除写权限并提示重新输入（加入密码错误则轮询静默，不影响只读）
-      gmAuthed = false
-      gmKey = null
-      if (roomName) {
-        localStorage.removeItem(ROOM_GM_STORAGE)
-      } else {
-        localStorage.removeItem(GM_KEY_STORAGE)
-      }
-      showToast(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
+      // GM 密码失效：清除写凭证并提示重新输入（加入密码错误则轮询静默，不影响只读）
+      invalidateGmCredential(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
       rerender()
       syncPolling()
     } else {
@@ -1070,12 +1095,10 @@ window.addEventListener('keydown', (e) => {
 })
 
 // 系统深浅偏好变化时跟随（仅 auto 模式生效）
-window
-  .matchMedia('(prefers-color-scheme: dark)')
-  .addEventListener('change', () => {
-    applyTheme()
-    rerender()
-  })
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  applyTheme()
+  rerender()
+})
 
 // ---------- PWA ----------
 

@@ -1,10 +1,10 @@
 import type { ProgressClock } from '../../common/types'
 import { CLOCK_MAX_SEGMENTS, CLOCK_MIN_SEGMENTS, clampInt } from '../../common/types'
-import { PALETTE, Store } from './state'
 import { svgClock } from './clock-svg'
-import { exportStateAsPng } from './export'
 import { bindDragHandle } from './drag-sort'
+import { exportStateAsPng } from './export'
 import type { KnownRoom } from './known-rooms'
+import { PALETTE, type Store } from './state'
 
 /**
  * 连接弹窗在 `⋯` 菜单里的名字。
@@ -448,11 +448,7 @@ function renderTopbar(
 
 // ---------- 顶栏「更多」菜单 ----------
 
-function menuItem(
-  label: string,
-  onSelect: () => void,
-  className = '',
-): HTMLButtonElement {
+function menuItem(label: string, onSelect: () => void, className = ''): HTMLButtonElement {
   const item = el('button', `menu-item ${className}`.trim(), label) as HTMLButtonElement
   item.addEventListener('click', (e) => {
     e.stopPropagation()
@@ -527,7 +523,9 @@ function renderMoreMenu(
           : (gm.localRooms.find((n) => {
               const o = gm.getLocalOrigin(n)
               return !!o && o.server === gm.serverBase && o.room === gm.roomName
-            }) ?? gm.localRooms[0] ?? '')
+            }) ??
+            gm.localRooms[0] ??
+            '')
         ui.pushLocalRooms = []
         ui.pushLocalLoading = true
         rerender()
@@ -673,18 +671,16 @@ function dragHandle(): HTMLElement {
 function clockCard(clock: ProgressClock): HTMLElement {
   const card = el('div', 'clock-card')
   card.dataset.clockId = clock.id
-  card.insertAdjacentHTML('beforeend', svgClock({ max: clock.max, fill: clock.fill, color: clock.color ?? '#888888' }))
+  card.insertAdjacentHTML(
+    'beforeend',
+    svgClock({ max: clock.max, fill: clock.fill, color: clock.color ?? '#888888' }),
+  )
   card.append(el('div', 'clock-count', `${clock.fill}/${clock.max}`))
   card.append(el('div', 'clock-name', clock.name || '未命名'))
   return card
 }
 
-function renderGrid(
-  store: Store,
-  ui: UiState,
-  readonly: boolean,
-  rerender: Rerender,
-): HTMLElement {
+function renderGrid(store: Store, ui: UiState, readonly: boolean, rerender: Rerender): HTMLElement {
   const grid = el('div', 'clocks-grid')
   const onReorder = (id: string, toIndex: number) => {
     store.reorderClock(id, toIndex)
@@ -707,12 +703,7 @@ function renderGrid(
 
 // ---------- 紧凑列表 ----------
 
-function renderList(
-  store: Store,
-  ui: UiState,
-  readonly: boolean,
-  rerender: Rerender,
-): HTMLElement {
+function renderList(store: Store, ui: UiState, readonly: boolean, rerender: Rerender): HTMLElement {
   const list = el('div', 'clock-list')
   const onReorder = (id: string, toIndex: number) => {
     store.reorderClock(id, toIndex)
@@ -803,11 +794,7 @@ function mountMaxPicker(
 
 // ---------- 新建弹窗 ----------
 
-function renderNewClockModal(
-  store: Store,
-  ui: UiState,
-  rerender: Rerender,
-): HTMLElement {
+function renderNewClockModal(store: Store, ui: UiState, rerender: Rerender): HTMLElement {
   const { backdrop, modal, close } = modalShell('新建进度钟', () => {
     ui.creating = false
     rerender()
@@ -1043,7 +1030,7 @@ function renderGmLoginModal(ui: UiState, gm: GmContext, rerender: Rerender): HTM
       close()
       return
     }
-    ui.gmError = result.cancelled ? '已取消，保持当前服务器' : result.error ?? '连接失败，请重试'
+    ui.gmError = result.cancelled ? '已取消，保持当前服务器' : (result.error ?? '连接失败，请重试')
     rerender()
   }
   connectBtn.addEventListener('click', () => void submit())
@@ -1099,11 +1086,7 @@ function renderRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): HTMLEl
     '加入密码（可留空 = 公开房间，发给玩家）',
     draft.joinPwd || gm.roomJoinPwd,
   )
-  const gmInput = makeInput(
-    'password',
-    'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）',
-    draft.gmPwd,
-  )
+  const gmInput = makeInput('password', 'GM 密码（留空 = 只读玩家；新建时必填 ≥6 位）', draft.gmPwd)
   // 输入只写状态、不触发重渲染，否则每敲一个字都会重建输入框、焦点就没了
   roomInput.addEventListener('input', () => {
     ui.roomDraft.name = roomInput.value
@@ -1180,7 +1163,11 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
   modal.append(
     hint,
     warn,
-    el('div', 'field', `房间：${gm.roomName}${gm.serverBase ? `（${gm.serverBase.replace(/^https?:\/\//, '')}）` : ''}`),
+    el(
+      'div',
+      'field',
+      `房间：${gm.roomName}${gm.serverBase ? `（${gm.serverBase.replace(/^https?:\/\//, '')}）` : ''}`,
+    ),
   )
 
   // 房间名字（留空不更改）：改名保留内容与密码，玩家需换新仓库
@@ -1211,12 +1198,7 @@ function renderManageRoomModal(ui: UiState, gm: GmContext, rerender: Rerender): 
     gmInput.addEventListener('input', () => {
       ui.manageDraft.gmPwd = gmInput.value
     })
-    modal.append(
-      el('div', 'field', '访问密码'),
-      joinInput,
-      el('div', 'field', 'GM 密码'),
-      gmInput,
-    )
+    modal.append(el('div', 'field', '访问密码'), joinInput, el('div', 'field', 'GM 密码'), gmInput)
   }
 
   const actions = el('div', 'modal-actions')
@@ -1676,26 +1658,20 @@ function renderRoomSidebar(ui: UiState, gm: GmContext, rerender: Rerender): HTML
 }
 
 /** 侧边栏折叠分组头：标题 + 折叠箭头，点整行展开/收起 */
-function sidebarGroupHeader(
-  label: string,
-  open: boolean,
-  onToggle: () => void,
-): HTMLElement {
+function sidebarGroupHeader(label: string, open: boolean, onToggle: () => void): HTMLElement {
   const header = el('div', `sidebar-group-header${open ? '' : ' collapsed'}`)
   const title = el('span', 'sidebar-group-title')
-  title.append(el('span', 'sidebar-caret', open ? '▼' : '▶'), el('span', 'sidebar-group-label', label))
+  title.append(
+    el('span', 'sidebar-caret', open ? '▼' : '▶'),
+    el('span', 'sidebar-group-label', label),
+  )
   header.append(title)
   header.addEventListener('click', onToggle)
   return header
 }
 
 /** 远程房间一行：已取得凭证的挂标签直接切（可编辑 > 可访问），否则弹窗填密码加入 */
-function remoteRoomItem(
-  room: string,
-  ui: UiState,
-  gm: GmContext,
-  rerender: Rerender,
-): HTMLElement {
+function remoteRoomItem(room: string, ui: UiState, gm: GmContext, rerender: Rerender): HTMLElement {
   const known = gm.knownRooms.find((r) => r.room === room && r.server === gm.serverBase)
   const active = !gm.roomLocal && room === gm.roomName
   const li = el('li', 'room-sidebar-item remote')

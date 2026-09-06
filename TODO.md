@@ -37,6 +37,18 @@
 
 ## Done
 
+- [x] **凭证清理归一化 + Biome 机器兜底**（web/refactor，审计收尾）——2026-09-06 完成
+  GM 写凭证清理收进 `main.ts` 的 `invalidateGmCredential()`（原先推送 401 / 改名 401 / 提交本地房间
+  401 / 启动复验 / 退出房间五处各写一遍）；切换房间验出缓存 GM 密码失效时，known-rooms 里的写凭证
+  一并抹掉（此前「可编辑」标签会一直挂着失效密码，与决策「只缓存验证通过的 GM 密码」相悖）。
+  删除 `api.ts` 无调用方的 `saveState`（默认房间写入，客户端已只走房间接口）。
+  server `store.ts` 的 `loadRoomMeta` 加 meta.json 结构校验，`renameRoom` 改为先读后改
+  （损坏元数据在改名前就拒绝，不再可能出现「目录已改名、元数据没跟上」的半截状态，也不再 500）。
+  根目录接入 Biome（`npm run lint`，配置 `biome.json`）：无分号 / 单引号 / 尾逗号 / 100 列，
+  与既有手写风格一致；顺带修掉 server 错误文案里的无用转义（`\ ` 实际渲染成空格，反斜杠没显示出来）
+  与 `headers['authorization']`、`(cached && cached.x)` 等小项；`?key=` 查询参数鉴权维持现状，
+  取舍已在 server/README 明确记录。
+
 - [x] **PWA 可安装 + 已知服务器快捷选择**（web/pwa）——2026-09-06 完成
   `public/manifest.json` + 手写 `public/sw.js`（只缓存 app 外壳，`/api` 不拦；导航 network-first /
   静态 cache-first / 不 skipWaiting）+ 图标由 `Web/scripts/make-icons.mjs` 用 server 已装的

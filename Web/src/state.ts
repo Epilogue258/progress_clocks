@@ -2,13 +2,20 @@ import type { ClockState, ProgressClock } from '../../common/types'
 import {
   CLOCK_MAX_SEGMENTS,
   CLOCK_MIN_SEGMENTS,
-  SCHEMA_VERSION,
   clampInt,
   createClockId,
   createEmptyState,
   parseState,
+  SCHEMA_VERSION,
 } from '../../common/types'
-import { ORDER_KEY, loadOrder, moveItem, normalizeOrder, saveOrder, sortByOrder } from './clock-order'
+import {
+  loadOrder,
+  moveItem,
+  normalizeOrder,
+  ORDER_KEY,
+  saveOrder,
+  sortByOrder,
+} from './clock-order'
 
 export const STORAGE_KEY = 'progress-clocks:state'
 const UNDO_LIMIT = 100
@@ -22,8 +29,14 @@ export type ChangeKind = 'data' | 'order'
 
 /** 粗野风格色板：按创建顺序分配，可在设置面板修改 */
 export const PALETTE = [
-  '#e53935', '#1e88e5', '#43a047', '#fb8c00',
-  '#8e24aa', '#fdd835', '#00acc1', '#d81b60',
+  '#e53935',
+  '#1e88e5',
+  '#43a047',
+  '#fb8c00',
+  '#8e24aa',
+  '#fdd835',
+  '#00acc1',
+  '#d81b60',
 ]
 
 function loadFrom(key: string): ClockState {
@@ -188,7 +201,7 @@ export class Store {
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(this.state))
     } catch {
-      // 同上
+      // 存储失败（隐私模式 / 配额满）静默：状态照常在内存里工作，只是刷新后回到上次落盘的版本
     }
   }
 

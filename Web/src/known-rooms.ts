@@ -49,9 +49,7 @@ function save(list: KnownRoom[]): void {
 
 /** 记住（或刷新）一个房间，排到最前；超出上限就淘汰最久没进的 */
 export function rememberRoom(entry: Omit<KnownRoom, 'lastAt'>): void {
-  const rest = loadKnownRooms().filter(
-    (r) => !(r.server === entry.server && r.room === entry.room),
-  )
+  const rest = loadKnownRooms().filter((r) => !(r.server === entry.server && r.room === entry.room))
   rest.unshift({ ...entry, lastAt: Date.now() })
   save(rest.slice(0, LIMIT))
 }

@@ -17,14 +17,23 @@
  * 返回 409 + 最新状态，客户端拉取合并后重试。不带 version = 强制覆盖。
  */
 
-import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createServer } from 'node:http'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import { buildExportSvg } from '../../common/export-svg.ts'
-import { createRoom, deleteRoom, listRooms, loadRoomMeta, loadState, renameRoom, saveState, updateRoomMeta } from './store.ts'
 import { renderPng } from './render.ts'
+import {
+  createRoom,
+  deleteRoom,
+  listRooms,
+  loadRoomMeta,
+  loadState,
+  renameRoom,
+  saveState,
+  updateRoomMeta,
+} from './store.ts'
 
 // 加载 .env（可选）：存在则读取，不存在则用系统环境变量（生产部署可直接删掉 .env）
 try {
@@ -41,17 +50,20 @@ const MAX_BODY = 1 * 1024 * 1024 // 请求体上限 1MB
 /** 写鉴权：请求需带 Authorization: Bearer <GM_KEY>（或 ?key= 查询参数） */
 function checkAuth(req: IncomingMessage): boolean {
   if (!GM_KEY) return true // 未设置密钥 = 不鉴权
-  const header = req.headers['authorization']
+  const header = req.headers.authorization
   if (header === `Bearer ${GM_KEY}`) return true
   const query = new URL(req.url ?? '/', 'http://localhost').searchParams.get('key')
   return query === GM_KEY
 }
 
 /** 房间路由解析：/api/room/<name>/<action>（action 可省略 = 删除），非法路径或非法编码返回 null */
-function parseRoomPath(
-  pathname: string,
-): { room: string; action: 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'rename' | 'delete' } | null {
-  const m = /^\/api\/room\/([^/]+)(?:\/(state|export\.png|export\.svg|auth-check|rename))?$/.exec(pathname)
+function parseRoomPath(pathname: string): {
+  room: string
+  action: 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'rename' | 'delete'
+} | null {
+  const m = /^\/api\/room\/([^/]+)(?:\/(state|export\.png|export\.svg|auth-check|rename))?$/.exec(
+    pathname,
+  )
   if (!m) return null
   let room: string
   try {
@@ -60,11 +72,24 @@ function parseRoomPath(
     // 非法 UTF-8 编码：直接拒绝（落到静态托管 404，不抛 500）
     return null
   }
-  return { room, action: (m[2] ?? 'delete') as 'state' | 'export.png' | 'export.svg' | 'auth-check' | 'rename' | 'delete' }
+  return {
+    room,
+    action: (m[2] ?? 'delete') as
+      | 'state'
+      | 'export.png'
+      | 'export.svg'
+      | 'auth-check'
+      | 'rename'
+      | 'delete',
+  }
 }
 
 /** 解析并保存状态（默认房间或命名房间）：JSON 解析 + 乐观锁 + 冲突响应 */
-async function handleSaveState(req: IncomingMessage, res: ServerResponse, room?: string): Promise<void> {
+async function handleSaveState(
+  req: IncomingMessage,
+  res: ServerResponse,
+  room?: string,
+): Promise<void> {
   const body = await readBody(req)
   let parsed: unknown
   try {
@@ -94,7 +119,10 @@ function sendExport(res: ServerResponse, room: string | undefined, format: 'png'
     res.end(png)
   } else {
     const svg = buildExportSvg(state)
-    res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-store' })
+    res.writeHead(200, {
+      'Content-Type': 'image/svg+xml; charset=utf-8',
+      'Cache-Control': 'no-store',
+    })
     res.end(svg)
   }
 }
@@ -152,7 +180,10 @@ async function serveStatic(res: ServerResponse, pathname: string): Promise<void>
   const safePath = normalize(pathname).replace(/^(\.\.[/\\])+/, '')
   // 根路径或目录请求回退 index.html（SPA 惯例）
   // 注意：Windows 上 normalize('/') 会变成 '\'，因此不能直接比较 safePath
-  const filePath = join(DIST_DIR, isRoot || safePath.endsWith('/') || safePath.endsWith('\\') ? 'index.html' : safePath)
+  const filePath = join(
+    DIST_DIR,
+    isRoot || safePath.endsWith('/') || safePath.endsWith('\\') ? 'index.html' : safePath,
+  )
   // 防目录穿越：解析后的路径必须仍在 dist 目录内
   if (!filePath.startsWith(DIST_DIR)) {
     res.writeHead(403).end()
@@ -224,7 +255,10 @@ const server = createServer(async (req, res) => {
       } else if (result.reason === 'weak-gm-pwd') {
         json(res, 400, { ok: false, error: 'GM 密码至少 6 位' })
       } else {
-        json(res, 400, { ok: false, error: '非法房间名：不能含 / \ 或 Windows 保留字符，1-32 字符' })
+        json(res, 400, {
+          ok: false,
+          error: '非法房间名：不能含 / \\ 或 Windows 保留字符，1-32 字符',
+        })
       }
       return
     }
@@ -238,7 +272,7 @@ const server = createServer(async (req, res) => {
         json(res, 404, { ok: false, error: '房间不存在' })
         return
       }
-      const bearer = req.headers['authorization']
+      const bearer = req.headers.authorization
       // 修改房间密码：需 GM 密码；只改请求体里传了的字段（joinPwd / gmPwd）。
       // 对外 API（同导出图）：Bot 等外部插件也能调用，前端与插件共用同一契约
       if (req.method === 'PATCH') {
@@ -301,7 +335,8 @@ const server = createServer(async (req, res) => {
           json(res, 400, { ok: false, error: 'JSON 解析失败' })
           return
         }
-        const newName = ((parsed as Record<string, unknown>)?.name as string | undefined)?.trim() ?? ''
+        const newName =
+          ((parsed as Record<string, unknown>)?.name as string | undefined)?.trim() ?? ''
         if (!newName) {
           json(res, 400, { ok: false, error: '缺少新房间名（name）' })
           return
@@ -311,7 +346,10 @@ const server = createServer(async (req, res) => {
           if (result.reason === 'exists') {
             json(res, 409, { ok: false, error: '新房间名已存在' })
           } else if (result.reason === 'invalid-name') {
-            json(res, 400, { ok: false, error: '非法房间名：不能含 / \ 或 Windows 保留字符，1-32 字符' })
+            json(res, 400, {
+              ok: false,
+              error: '非法房间名：不能含 / \\ 或 Windows 保留字符，1-32 字符',
+            })
           } else {
             json(res, 404, { ok: false, error: '房间不存在' })
           }
@@ -416,7 +454,9 @@ server.listen(PORT, () => {
   console.log(`  状态 API:   GET/POST /api/state（POST 需鉴权）`)
   console.log(`  鉴权验证:   GET /api/auth-check`)
   console.log(`  导出图片:   GET /api/export.png  |  /api/export.svg`)
-  console.log(`  房间:       GET/POST /api/rooms | GET/POST /api/room/<name>/state | PATCH/DELETE /api/room/<name>（密码=读写鉴权）`)
+  console.log(
+    `  房间:       GET/POST /api/rooms | GET/POST /api/room/<name>/state | PATCH/DELETE /api/room/<name>（密码=读写鉴权）`,
+  )
   console.log(`  静态托管:   Web/dist（先执行 Web 目录下 npm run build）`)
   if (GM_KEY) {
     console.log(`  写鉴权:     已启用（GM_KEY 已设置；请求带 Authorization: Bearer <GM_KEY>）`)

@@ -5,8 +5,8 @@
  * 在线场景可改用 server 的 GET /api/export.png（外部插件 / QQ Bot 也用这个）。
  */
 
-import type { ClockState } from '../../common/types'
 import { buildExportSvg } from '../../common/export-svg'
+import type { ClockState } from '../../common/types'
 
 /** 导出当前全部进度钟为 PNG（白底固定排版，方便发送给玩家） */
 export async function exportStateAsPng(state: ClockState): Promise<void> {
@@ -14,7 +14,7 @@ export async function exportStateAsPng(state: ClockState): Promise<void> {
 
   // SVG 转位图（等字体与几何渲染完成后）
   const img = new Image()
-  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
   await img.decode()
 
   const canvas = document.createElement('canvas')
