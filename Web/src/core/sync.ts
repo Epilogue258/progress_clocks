@@ -12,7 +12,9 @@
  * - 首次失败静默补一次快速重试，再失败进「重试中」，连败 3 次进「离线」；退避 5s→…→60s 封顶
  */
 import type { ClockState } from '../../../common/types'
-import { ApiError } from '../api'
+// 运行时导入带 .ts 扩展名：sync.test.ts 由 Node 原生跑 TS（type stripping 不解析扩展名），
+// Vite 与 tsc（allowImportingTsExtensions）都认这种写法——server/ 目录同款约定
+import { ApiError } from '../api.ts'
 
 export type ConnState = 'reachable' | 'degraded' | 'down'
 
@@ -232,25 +234,66 @@ export class SyncEngine {
         this.pollDelay = POLL_INTERVAL
         this.silentFail = false
       }
-    } else if (this.connValue === 'degraded') {
+    } else {
+      // degraded / down：退避继续翻倍直至 60s 封顶。此前 down 没有分支、pollDelay 卡死在
+      // 进入离线时的 20s——离线状态下点一次手动「重试」（pollDelay 复位 5s）后更是永久 5s 空转，
+      // 正是 README 明确要避免的「服务器已下线时固定 5s 打下去只是空转」。
+      // down 判定只在 degraded 分支做一次：已离线就不再降级，也不会重复置灰
       this.degradedFails++
-      this.pollDelay = Math.min(this.pollDelay * 2, RETRY_CAP) // 5s → 10s → 20s → 40s → 60s
-      if (this.degradedFails >= DOWN_AFTER_FAILS) this.connValue = 'down'
+      this.pollDelay = Math.min(this.pollDelay * 2, RETRY_CAP) // 5s → 10s → 20s → 40s → 60s 封顶
+      if (this.connValue === 'degraded' && this.degradedFails >= DOWN_AFTER_FAILS) {
+        this.connValue = 'down'
+      }
     }
-    // down 后继续失败保持 60s 上限（pollDelay 已在 degraded 阶段拉满），不再变化
     this.deps.render()
   }
 
-  /** 手动「重试」：立刻发一次请求并把退避重置回起点（覆盖「网络已恢复但不想等退避」的情况） */
+  /**
+   * 手动「重试」：立刻发一次请求并把退避重置回起点（覆盖「网络已恢复但不想等退避」的情况）。
+   * 重置要落在节拍上：旧的长间隔定时一并取消，重试收尾后按起点（失败则翻倍值）重排轮询——
+   * 否则「重置」只改了变量，轮询还在干等旧的长间隔，等于没重置。
+   */
   retryNow(): void {
     this.pollDelay = POLL_INTERVAL
+    if (this.pollStop) {
+      this.pollPendingCancel?.()
+      this.pollPendingCancel = undefined
+    }
     void (async () => {
       try {
         this.handlePollUpdate(await this.deps.pull())
       } catch (err) {
         this.handlePollError(err)
       }
+      if (this.pollStop && this.pollPendingCancel === undefined) {
+        this.scheduleNextTick(this.pollGeneration)
+      }
     })()
+  }
+
+  private pollGeneration = 0
+  private pollPendingCancel: (() => void) | undefined
+
+  /** 下一次轮询的间隔：静默快速重试补那一次用 100ms；正常 reachable 用固定间隔；断线中用退避值 */
+  private nextPollDelay(): number {
+    return this.silentFail ? 100 : this.connValue === 'reachable' ? POLL_INTERVAL : this.pollDelay
+  }
+
+  /** 代次令牌：startPolling/stopPolling 各前进一步，过期 tick（在途请求回来晚了）自行作废不重排 */
+  private scheduleNextTick(gen: number): void {
+    if (gen !== this.pollGeneration) return
+    this.pollPendingCancel = this.deps.schedule(() => void this.pollTick(gen), this.nextPollDelay())
+  }
+
+  private pollTick = async (gen: number): Promise<void> => {
+    if (gen !== this.pollGeneration) return
+    try {
+      this.handlePollUpdate(await this.deps.pull())
+    } catch (e) {
+      this.handlePollError(e)
+    }
+    if (gen !== this.pollGeneration) return
+    this.scheduleNextTick(gen)
   }
 
   private startPolling(): void {
@@ -260,27 +303,14 @@ export class SyncEngine {
     this.silentFail = false
     this.degradedFails = 0
     this.pollDelay = POLL_INTERVAL
-    let localStopped = false
-    let cancelPending: (() => void) | undefined
+    this.pollGeneration++
+    const gen = this.pollGeneration
     this.pollStop = () => {
-      localStopped = true
-      cancelPending?.()
+      this.pollPendingCancel?.()
+      this.pollPendingCancel = undefined
+      this.pollGeneration++
     }
-    const tick = async (): Promise<void> => {
-      if (localStopped) return
-      try {
-        this.handlePollUpdate(await this.deps.pull())
-      } catch (e) {
-        this.handlePollError(e)
-      }
-      if (localStopped) return
-      // 静默快速重试补那一次用 100ms；正常 reachable 用固定间隔；断线中用退避值
-      cancelPending = this.deps.schedule(
-        tick,
-        this.silentFail ? 100 : this.connValue === 'reachable' ? POLL_INTERVAL : this.pollDelay,
-      )
-    }
-    void tick()
+    void this.pollTick(gen)
   }
 
   stopPolling(): void {

@@ -11,7 +11,8 @@
  * - 服务器地址的变更途经此处的都会顺手记进 known-servers（?server= 分享链接
  *   的首次记忆仍归 main.ts，那属于启动引导）。
  */
-import { rememberServer } from '../known-servers'
+// 运行时导入带 .ts 扩展名：Node 原生跑 TS 不解析扩展名（见 core/sync.ts 说明）
+import { rememberServer } from '../known-servers.ts'
 
 const API_BASE_STORAGE = 'pc-api-base'
 const ROOM_STORAGE = 'pc-room-name'
