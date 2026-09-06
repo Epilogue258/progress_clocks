@@ -1,16 +1,20 @@
 /**
- * 进度钟 Web 端入口
+ * 进度钟 Web 端入口——编排层。
  * - GM 主控模式：输入 GM 密钥（Bearer 鉴权）后获得编辑权限
  * - 玩家查看模式：URL 带 ?readonly 时纯只读（连登录入口都隐藏）
  *
+ * 职责划分：会话状态（服务器/房间/凭证）在 core/session.ts，
+ * 同步状态机（推送/轮询/断线退避）在 core/sync.ts，渲染与手势在 ui.ts。
+ * 本文件只剩三件事：把模块接起来、实现 GmContext 的各房间操作、全局快捷键。
+ *
  * 数据流（本地优先 + server 同步）：
  * - 启动：localStorage 立即显示 -> 异步拉取 server 状态替换（server 为权威）
- * - 变更：本地立即生效 + 防抖 500ms 全量推送（带密钥 + 版本号乐观锁）
+ * - 变更：本地立即生效 + 防抖 500ms 全量推送（推送不带 version = force push）
  * - 冲突：409 -> 自动拉取最新状态替换 + 提示（多 GM 同时操作的兜底）
  * - server 不可达：保持本地 localStorage 数据，离线可用
  */
 import './styles.css'
-import { type ClockState, createEmptyState, isValidRoomName } from '../../common/types'
+import { createEmptyState, isValidRoomName } from '../../common/types'
 import {
   ApiError,
   changeRoomPwd,
@@ -18,7 +22,6 @@ import {
   deleteRoom,
   fetchRoomState,
   listRooms,
-  pollState,
   renameRoom,
   saveRoomState,
   saveRoomStateForce,
@@ -26,6 +29,8 @@ import {
   verifyKey,
   verifyRoomKey,
 } from './api'
+import { normalizeBase, Session } from './core/session'
+import { SyncEngine } from './core/sync'
 import { forgetRoom, type KnownRoom, loadKnownRooms, rememberRoom } from './known-rooms'
 import { loadKnownServers, rememberServer } from './known-servers'
 import {
@@ -48,42 +53,12 @@ import {
   type UiState,
 } from './ui'
 
-// server 地址解析优先级：?server= URL 参数 > localStorage 记忆 > 同源（''）
-// 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
-// 通过 ?server=http://ip:2333 或 GM 弹窗填服务器地址连接任意后端；同源托管时留空
-const API_BASE_STORAGE = 'pc-api-base'
-
-function normalizeBase(url: string): string {
-  return url.trim().replace(/\/+$/, '')
-}
-
-function resolveApiBase(): string {
-  const fromUrl = new URLSearchParams(location.search).get('server')
-  if (fromUrl) return normalizeBase(fromUrl)
-  const saved = localStorage.getItem(API_BASE_STORAGE)
-  return saved ? normalizeBase(saved) : ''
-}
-
-let API_BASE = resolveApiBase()
-// 分享链接里的 ?server= 是「GM 告诉玩家服务器在哪」的主要渠道：记进已知服务器，
-// 下次打开（或装了 PWA 后从图标启动，URL 不带参数）不必再依赖链接
-const serverFromUrl = new URLSearchParams(location.search).get('server')
-if (serverFromUrl) rememberServer(normalizeBase(serverFromUrl))
-
-// 房间配置：?room= URL 参数 > localStorage 记忆（密码仅存 localStorage，不进 URL）
-// 双密码：joinPwd = 玩家只读凭证（可空 = 公开房间），gmPwd = GM 写凭证（必填 ≥6 位）
-const ROOM_STORAGE = 'pc-room-name'
-const ROOM_JOIN_STORAGE = 'pc-room-join'
-const ROOM_GM_STORAGE = 'pc-room-gm'
-const GM_KEY_STORAGE = 'pc-gm-key'
-const ROOM_TYPE_STORAGE = 'pc-room-type'
 const urlReadonly = new URLSearchParams(location.search).has('readonly')
-
 // ?room= 是分享链接，指向的一定是远端房间；本地房间只按记忆恢复（不分享）
 const roomFromUrl = new URLSearchParams(location.search).get('room')
-let roomName = roomFromUrl ?? localStorage.getItem(ROOM_STORAGE) ?? ''
-let roomLocal = !roomFromUrl && localStorage.getItem(ROOM_TYPE_STORAGE) === 'local'
-let roomJoinPwd = localStorage.getItem(ROOM_JOIN_STORAGE) ?? ''
+// 分离模式：Web/dist 可脱离 server 单独打开（file:// 或任意静态托管），
+// 通过 ?server=http://ip:2333 或 GM 弹窗填服务器地址连接任意后端
+const serverFromUrl = new URLSearchParams(location.search).get('server')
 
 const root = document.getElementById('app')
 if (!root) throw new Error('找不到 #app 挂载点')
@@ -130,107 +105,81 @@ const ui: UiState = {
   pushLocalLoading: false,
 }
 
-// ---------- GM 鉴权状态 ----------
+// ---------- 会话（服务器 / 房间 / 凭证，见 core/session.ts） ----------
 
-// 房间模式：gmKey = GM 密码（写凭证）；默认房间：GM_KEY
-let gmKey: string | null = roomName
-  ? localStorage.getItem(ROOM_GM_STORAGE)
-  : localStorage.getItem(GM_KEY_STORAGE)
-let gmAuthed = roomName ? !!gmKey : false
-/** 本地是否有未同步到服务器的改动（推送成功才清零；切换服务器时用于丢弃提示） */
-let dirty = false
+const session = new Session({
+  urlReadonly,
+  urlServer: serverFromUrl ?? undefined,
+  urlRoom: roomFromUrl ?? undefined,
+})
+// 分享链接里的 ?server= 是「GM 告诉玩家服务器在哪」的主要渠道：记进已知服务器，
+// 下次打开（或装了 PWA 后从图标启动，URL 不带参数）不必再依赖链接
+if (serverFromUrl) rememberServer(normalizeBase(serverFromUrl))
 
-/**
- * 断线三阶段（README「断线的三阶段」）。连接状态完全由轮询结果推导，不做独立探活：
- * 首次失败静默补一次快速重试（不提示不置灰）→ 仍失败进「重试中」（置灰写操作）
- * → 再连续失败 3 次进「离线」（离线面板，只留另存为本地）→ 退避拉长 + 手动「重试」。
- * 本地房间与空白工作区不联网、不轮询，此状态恒为 reachable，不受影响。
- */
-type ConnState = 'reachable' | 'degraded' | 'down'
-let connState: ConnState = 'reachable'
-let silentFail = false // 首次失败后等快速重试；补的那一次不计入离线判定的失败次数
-let degradedFails = 0 // 进入「重试中」后的连续失败次数（≥3 → 离线）
-let pollDelay = 5000
+// ---------- 同步引擎（推送 / 轮询 / 断线退避，见 core/sync.ts） ----------
 
-/**
- * 任一请求成功（轮询 / 推送 / 启动拉取）都复位断线状态并给一次可见反馈——
- * 静默恢复等于没恢复，用户不知道什么时候能继续编辑。
- */
-function markReachable(): void {
-  if (connState !== 'reachable') {
-    connState = 'reachable'
-    silentFail = false
-    degradedFails = 0
-    pollDelay = 5000
-    showToast('已重新连接')
-    rerender()
-  }
+/** 对着当前服务器校验凭证：远端房间验 GM 密码，空白工作区验 GM_KEY，本地房间无需凭证 */
+function checkGmKey(key: string): Promise<VerifyResult> {
+  if (session.roomLocal) return Promise.resolve('ok' as VerifyResult)
+  return session.room
+    ? verifyRoomKey(session.serverBase, session.room, key)
+    : verifyKey(session.serverBase, key)
 }
+
+/** GM 密码失效（推送 401）：清登录态 + 一条可见提示；加入密码错误则轮询侧静默，不经过这里 */
+function rejectCredentialWithToast(): void {
+  session.invalidateCredential()
+  showToast(session.room ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
+}
+
+const sync = new SyncEngine(
+  {
+    get room() {
+      return session.room
+    },
+    get joinPwd() {
+      return session.joinPwd
+    },
+    canPush: () => session.canPush(),
+    shouldPoll: () => session.room !== '' && !session.roomLocal && !session.authed,
+    pull: () => fetchRoomState(session.serverBase, session.room, session.joinPwd),
+    push: () =>
+      saveRoomState(session.serverBase, session.room, session.gmKey ?? '', store.pushState),
+    schedule: (fn, ms) => {
+      const id = window.setTimeout(fn, ms)
+      return () => window.clearTimeout(id)
+    },
+    toast: showToast,
+    render: () => rerender(),
+    promptRejoin: () => openRoomDialog(ui),
+    onCredentialRejected: rejectCredentialWithToast,
+  },
+  store,
+)
+
+// ---------- GmContext：ui.ts 只负责展示与收集输入，操作实现在这里 ----------
 
 /**
  * 能否编辑眼前这份数据：本地房间 / 空白工作区永远可编辑；远端房间需 GM 凭证且在线。
  * 断线时（有凭证但连不上服务器）写操作一并置灰——push 不出去，改了也只是改本地暂存。
- * 与 canPush 是两个独立的问题——「能不能改」不该由「能不能同步」决定。
+ * 与 canPush（session.canPush）是两个独立的问题——「能不能改」不该由「能不能同步」决定。
  */
 const canEdit = (): boolean =>
-  !urlReadonly && (roomName === '' || roomLocal || (gmAuthed && connState === 'reachable'))
-/** 能否推送：只有远端房间且持有写凭证才会同步；本地与空白工作区不联网 */
-const canPush = (): boolean => roomName !== '' && !roomLocal && gmAuthed && !urlReadonly
-
-/** 记住 GM 凭证：房间模式存房间 GM 密码，默认房间存 GM_KEY */
-function persistGmKey(key: string): void {
-  localStorage.setItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE, key)
-}
-
-/** 丢弃 GM 凭证 */
-function dropGmKey(): void {
-  localStorage.removeItem(roomName ? ROOM_GM_STORAGE : GM_KEY_STORAGE)
-}
-
-/**
- * 丢弃 GM 写凭证并复位登录态：gmKey / gmAuthed 清零 + 本机记忆删除，可选带一条 toast。
- * 清理序列的统一入口——此前推送 401 / 改名 401 / 提交本地房间 401 / 启动复验失败
- * 各写一遍，漏掉任何一步（gmAuthed 没复位、或 localStorage 残留）表现各异且难排查。
- * 只清「当前房间 / 工作区」这一份凭证；known-rooms 缓存的按房间条目由调用方决定是否抹掉。
- */
-function invalidateGmCredential(toast?: string): void {
-  gmKey = null
-  gmAuthed = false
-  dropGmKey()
-  if (toast) showToast(toast)
-}
-
-/** 对着当前服务器校验凭证：远端房间验 GM 密码，空白工作区验 GM_KEY，本地房间无需凭证 */
-function checkGmKey(key: string): Promise<VerifyResult> {
-  if (roomLocal) return Promise.resolve('ok' as VerifyResult)
-  return roomName ? verifyRoomKey(API_BASE, roomName, key) : verifyKey(API_BASE, key)
-}
-
-// 启动时验证本地已存的密钥是否仍有效
-if (!urlReadonly && gmKey) {
-  const verifyPromise = checkGmKey(gmKey)
-  verifyPromise.then((result) => {
-    gmAuthed = result === 'ok'
-    // 只有服务器明确说「凭证不对」才丢弃。连不上时保留：
-    // 离线打开远端房间必然校验失败，若据此清空，联网后还得重新输一遍密码
-    if (result === 'unauthorized') invalidateGmCredential()
-    rerender()
-    syncPolling()
-  })
-}
+  !urlReadonly &&
+  (session.room === '' || session.roomLocal || (session.authed && sync.connState === 'reachable'))
 
 const gm: GmContext = {
   urlReadonly,
   get authed() {
-    return gmAuthed
+    return session.authed
   },
-  /** 当前房间名（'' = 默认房间） */
+  /** 当前房间名（'' = 空白工作区） */
   get roomName() {
-    return roomName
+    return session.room
   },
   /** 当前加入密码（'' = 公开房间） */
   get roomJoinPwd() {
-    return roomJoinPwd
+    return session.joinPwd
   },
   /**
    * 一次应用「服务器地址 + 凭证」。
@@ -240,102 +189,94 @@ const gm: GmContext = {
    */
   onConnect: async (base, key) => {
     const next = normalizeBase(base)
-    const serverChanged = next !== API_BASE
+    const serverChanged = next !== session.serverBase
 
     // 换服务器会丢掉本地尚未同步的改动，先确认
     if (
       serverChanged &&
-      dirty &&
+      sync.dirty &&
       !confirm('本地有尚未同步到服务器的改动，切换服务器将丢弃这些改动。继续？')
     ) {
       return { ok: false, cancelled: true }
     }
 
-    if (serverChanged) {
-      API_BASE = next
-      localStorage.setItem(API_BASE_STORAGE, next)
-      rememberServer(next)
-    }
+    if (serverChanged) session.setServer(next)
 
     // 凭证：填了就验新的；没填但换了服务器，旧凭证要对着新服务器复验一次
     let error: string | null = null
     if (key) {
       const result = await checkGmKey(key)
       if (result === 'ok') {
-        gmKey = key
-        gmAuthed = true
-        persistGmKey(key)
+        session.setCredential(key)
         // 已加入的远端房间里登录 GM：把写凭证记进 known-rooms，
         // 之后「提交本地房间」到它直接复用，不用再以 GM 身份进一次
-        if (roomName && !roomLocal) {
-          const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === roomName)
+        if (session.room && !session.roomLocal) {
+          const entry = loadKnownRooms().find(
+            (r) => r.server === session.serverBase && r.room === session.room,
+          )
           rememberRoom({
-            server: API_BASE,
-            room: roomName,
-            joinPwd: entry?.joinPwd ?? roomJoinPwd,
+            server: session.serverBase,
+            room: session.room,
+            joinPwd: entry?.joinPwd ?? session.joinPwd,
             gmPwd: key,
           })
         }
       } else if (result === 'unauthorized') {
-        error = roomName ? 'GM 密码无效，请重试' : 'GM 密钥无效，请重试'
+        error = session.room ? 'GM 密码无效，请重试' : 'GM 密钥无效，请重试'
       } else {
         // 连不上时要说清楚是「没验成」，而不是指控用户的密钥不对
         error = '无法连接服务器，凭证未验证'
       }
-    } else if (serverChanged && gmKey) {
-      const result = await checkGmKey(gmKey)
-      gmAuthed = result === 'ok'
-      if (result === 'unauthorized') invalidateGmCredential()
+    } else if (serverChanged && session.gmKey) {
+      const result = await checkGmKey(session.gmKey)
+      session.setAuthed(result === 'ok')
+      if (result === 'unauthorized') session.invalidateCredential()
     }
 
     // 换了服务器才重拉；拉到就把 dirty 归零——本地已与服务端一致
     if (serverChanged) {
       try {
-        store.replaceState(await pullCurrent())
-        dirty = false
+        store.replaceState(await fetchRoomState(session.serverBase, session.room, session.joinPwd))
+        sync.resetDirty()
       } catch {
         // 连接失败：配置已保存，本地数据保持可用（离线兜底），下次刷新重试
         showToast('无法连接服务器，已保持本地数据')
       }
     }
 
-    syncPolling()
+    sync.reconfigure()
     return error ? { ok: false, error } : { ok: true }
   },
   onLogout: () => {
-    gmAuthed = false
-    gmKey = null
-    dropGmKey()
+    session.invalidateCredential()
     rerender()
-    syncPolling()
+    sync.reconfigure()
   },
   /** 当前生效的服务器地址（'' = 同源） */
   get serverBase() {
-    return API_BASE
+    return session.serverBase
   },
   /** 加入房间（GitHub 模型：pull 到本地；gmPwd 可空 = 只读玩家） */
   onJoinRoom: async (room: string, joinPwd: string, gmPwd: string) => {
     // 加入会用房间状态整体覆盖本地，与切换房间/服务器一样先确认
-    if (dirty && !confirm('本地有尚未同步到服务器的改动，加入房间将丢弃这些改动。继续？')) {
+    if (sync.dirty && !confirm('本地有尚未同步到服务器的改动，加入房间将丢弃这些改动。继续？')) {
       return { ok: false as const, error: '已取消' }
     }
     try {
-      const remote = await fetchRoomState(API_BASE, room, joinPwd)
+      const remote = await fetchRoomState(session.serverBase, room, joinPwd)
       enterRoom(room, joinPwd)
       store.replaceState(remote)
       // 本地已被远端整体替换，此刻与服务端同版本——dirty 必须归零。
       // 漏掉这一句，轮询会被 if (dirty) return 永久挡死，刚进的房间从此是个静止快照
-      dirty = false
+      sync.resetDirty()
       ui.sidebarOpen = false
       // 只有验证通过的 GM 密码才值得缓存；否则下次切换会被无声地当成玩家
       let effectiveGmPwd = ''
       if (gmPwd) {
-        const result = await verifyRoomKey(API_BASE, room, gmPwd)
+        const result = await verifyRoomKey(session.serverBase, room, gmPwd)
         if (result === 'ok') {
-          gmKey = gmPwd
-          gmAuthed = true
+          session.setCredential(gmPwd)
           effectiveGmPwd = gmPwd
-          localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
         } else {
           showToast(
             result === 'unauthorized'
@@ -344,9 +285,9 @@ const gm: GmContext = {
           )
         }
       }
-      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd: effectiveGmPwd })
+      rememberRoom({ server: session.serverBase, room, joinPwd, gmPwd: effectiveGmPwd })
       rerender()
-      syncPolling()
+      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -355,20 +296,18 @@ const gm: GmContext = {
   /** 新建远端房间（从空开始，不继承当前画布；内容靠手动 push / 提交上传） */
   onCreateRoom: async (room: string, joinPwd: string, gmPwd: string) => {
     try {
-      await createRoom(API_BASE, room, joinPwd, gmPwd)
+      await createRoom(session.serverBase, room, joinPwd, gmPwd)
       enterRoom(room, joinPwd)
       ui.sidebarOpen = false
-      gmKey = gmPwd
-      gmAuthed = true
-      localStorage.setItem(ROOM_GM_STORAGE, gmPwd)
+      session.setCredential(gmPwd)
       // 新房间从空开始：服务端建仓即空状态（version 0），本地画布也置空，两边对齐。
       // 不再像旧版那样把当前画布一起 push 进新房间——想把已有内容搬进来，
       // 走「提交本地房间」（选一份本地房间）或直接在空房里重做再保存。
       store.replaceState(createEmptyState())
-      dirty = false
-      rememberRoom({ server: API_BASE, room, joinPwd, gmPwd })
+      sync.resetDirty()
+      rememberRoom({ server: session.serverBase, room, joinPwd, gmPwd })
       rerender()
-      syncPolling()
+      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
@@ -377,7 +316,7 @@ const gm: GmContext = {
   /** 拉取房间列表（公开；失败静默返回空） */
   onListRooms: async () => {
     try {
-      return await listRooms(API_BASE)
+      return await listRooms(session.serverBase)
     } catch {
       return []
     }
@@ -392,32 +331,32 @@ const gm: GmContext = {
   },
   /** 切换到已知房间：直接用缓存的密码进，不必重输 */
   onSwitchRoom: async (entry: KnownRoom) => {
-    if (entry.room === roomName && entry.server === API_BASE) return { ok: true as const }
+    if (entry.room === session.room && entry.server === session.serverBase) {
+      return { ok: true as const }
+    }
     // 切房间会整体覆盖本地状态，有未同步改动时先确认（与切换服务器一致）
-    if (dirty && !confirm('本地有尚未同步到服务器的改动，切换房间将丢弃这些改动。继续？')) {
+    if (sync.dirty && !confirm('本地有尚未同步到服务器的改动，切换房间将丢弃这些改动。继续？')) {
       return { ok: false as const, error: '已取消' }
     }
     try {
       const remote = await fetchRoomState(entry.server, entry.room, entry.joinPwd)
       // 已知房间自带服务器地址：切过去时连地址一起换（这就是「一键切换」的意义）
-      API_BASE = normalizeBase(entry.server)
-      localStorage.setItem(API_BASE_STORAGE, API_BASE)
-      rememberServer(API_BASE)
+      session.setServer(entry.server)
       enterRoom(entry.room, entry.joinPwd)
       store.replaceState(remote)
       // 同加入房间：本地已被远端整体替换，dirty 归零，否则轮询永久停摆
-      dirty = false
+      sync.resetDirty()
       ui.sidebarOpen = false
       if (entry.gmPwd) {
-        const result = await verifyRoomKey(API_BASE, entry.room, entry.gmPwd)
-        gmKey = entry.gmPwd
-        gmAuthed = result === 'ok'
-        if (result === 'ok') localStorage.setItem(ROOM_GM_STORAGE, entry.gmPwd)
-        // 没问出结果（连不上 / 服务端出错）时保留缓存的密码，下次切换还能再试；
+        const result = await verifyRoomKey(session.serverBase, entry.room, entry.gmPwd)
+        // 先记后验：没问出结果（连不上 / 服务端出错）时保留缓存的密码，下次切换还能再试；
         // 只有服务器明确说不对才丢——known-rooms 里的写凭证一并抹掉，
         // 否则「可编辑」标签继续挂着失效密码，下次切换照样无声失败（决策：只缓存验证通过的 GM 密码）
+        session.setCredentialUnverified(entry.gmPwd)
+        session.setAuthed(result === 'ok')
+        if (result === 'ok') session.persistCredential()
         else if (result === 'unauthorized') {
-          invalidateGmCredential()
+          session.invalidateCredential()
           forgetRoom(entry.server, entry.room)
           rememberRoom({
             server: entry.server,
@@ -427,9 +366,7 @@ const gm: GmContext = {
           })
         }
       } else {
-        gmKey = null
-        gmAuthed = false
-        localStorage.removeItem(ROOM_GM_STORAGE)
+        session.invalidateCredential()
       }
       // 刷新 lastAt，让它排到缓存列表最前
       rememberRoom({
@@ -439,7 +376,7 @@ const gm: GmContext = {
         gmPwd: entry.gmPwd,
       })
       rerender()
-      syncPolling()
+      sync.reconfigure()
       return { ok: true as const }
     } catch (e) {
       const error = e instanceof ApiError ? e.message : '无法连接该房间'
@@ -455,19 +392,19 @@ const gm: GmContext = {
   /** 删除房间（GM 密码已在登录态；删除后自动退回空白工作区） */
   onDeleteRoom: async (room: string) => {
     try {
-      await deleteRoom(API_BASE, room, gmKey ?? '')
+      await deleteRoom(session.serverBase, room, session.gmKey ?? '')
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
     // 服务器上的房间没了，本机缓存里的这条也一并清掉
-    forgetRoom(API_BASE, room)
+    forgetRoom(session.serverBase, room)
     leaveRoom()
     showToast(`房间「${room}」已删除`)
     return { ok: true as const }
   },
   /** 退出当前房间，回到本地空白工作区（远端房间保留在服务器上） */
   onLeaveRoom: async () => {
-    if (dirty && !confirm('本地有尚未同步到服务器的改动，退出房间将丢弃这些改动。继续？')) {
+    if (sync.dirty && !confirm('本地有尚未同步到服务器的改动，退出房间将丢弃这些改动。继续？')) {
       return { ok: false as const, error: '已取消' }
     }
     leaveRoom()
@@ -475,7 +412,7 @@ const gm: GmContext = {
   },
   /** 当前是否在本地房间（本地房间永远可编辑、永不联网） */
   get roomLocal() {
-    return roomLocal
+    return session.roomLocal
   },
   /** 本机已建的本地房间列表 */
   get localRooms() {
@@ -494,7 +431,7 @@ const gm: GmContext = {
   onDeleteLocalRoom: (name: string) => {
     forgetLocalRoom(name)
     clearLocalState(name)
-    if (roomName === name && roomLocal) {
+    if (session.room === name && session.roomLocal) {
       leaveRoom()
     } else {
       rerender()
@@ -518,20 +455,16 @@ const gm: GmContext = {
     if (gmPwd) patch.gmPwd = gmPwd
     if (!patch.joinPwd && !patch.gmPwd) return { ok: false as const, error: '没有要修改的密码' }
     try {
-      await changeRoomPwd(API_BASE, roomName, gmKey ?? '', patch)
+      await changeRoomPwd(session.serverBase, session.room, session.gmKey ?? '', patch)
     } catch (e) {
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
-    if (patch.gmPwd) {
-      gmKey = patch.gmPwd
-      localStorage.setItem(ROOM_GM_STORAGE, patch.gmPwd)
-    }
-    if (patch.joinPwd) {
-      roomJoinPwd = patch.joinPwd
-      localStorage.setItem(ROOM_JOIN_STORAGE, patch.joinPwd)
-    }
+    if (patch.gmPwd) session.setCredential(patch.gmPwd)
+    if (patch.joinPwd) session.setJoinPwd(patch.joinPwd)
     // known-rooms 缓存里该条也刷新（只动存在的那条，别改排序）
-    const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === roomName)
+    const entry = loadKnownRooms().find(
+      (r) => r.server === session.serverBase && r.room === session.room,
+    )
     if (entry) {
       rememberRoom({
         server: entry.server,
@@ -554,24 +487,24 @@ const gm: GmContext = {
     if (!room) return { ok: false as const, error: '请点选一个目标远端房间' }
     const state = loadLocalState(name)
     // 已有房间的写凭证：本机缓存过 GM 密码就用它，否则退回当前登录凭证
-    const cached = loadKnownRooms().find((r) => r.server === API_BASE && r.room === room)
-    const pwd = cached?.gmPwd || gmKey || ''
+    const cached = loadKnownRooms().find((r) => r.server === session.serverBase && r.room === room)
+    const pwd = cached?.gmPwd || session.gmKey || ''
     if (!pwd) {
       return { ok: false as const, error: `没有「${room}」的 GM 密码，请先以 GM 身份进入该房间` }
     }
     try {
       // force push：整体覆盖目标已有房间（内容是本次提交的本地草稿）
-      await saveRoomStateForce(API_BASE, room, pwd, state)
+      await saveRoomStateForce(session.serverBase, room, pwd, state)
       showToast(`本地房间「${name}」已提交，覆盖了「${room}」`)
       // 记住远端来源：下次提交直接默认选中回推目标
-      rememberRoom({ server: API_BASE, room, joinPwd: '', gmPwd: pwd })
-      rememberLocalRoom(name, { server: API_BASE, room })
+      rememberRoom({ server: session.serverBase, room, joinPwd: '', gmPwd: pwd })
+      rememberLocalRoom(name, { server: session.serverBase, room })
       return { ok: true as const }
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         // GM 密码失效：本机缓存不可信，清掉这条房间的写凭证；若当前正以它登录，一并登出
-        forgetRoom(API_BASE, room)
-        if (roomName === room && !roomLocal) invalidateGmCredential()
+        forgetRoom(session.serverBase, room)
+        if (session.room === room && !session.roomLocal) session.invalidateCredential()
         return {
           ok: false as const,
           error: `「${room}」的 GM 密码无效，请重新以 GM 身份进入后再试`,
@@ -586,21 +519,21 @@ const gm: GmContext = {
    */
   onRenameRoom: async (newName: string) => {
     const next = newName.trim()
-    if (!next || next === roomName) return { ok: false as const, error: '房间名未变化' }
+    if (!next || next === session.room) return { ok: false as const, error: '房间名未变化' }
     if (!isValidRoomName(next)) {
       return { ok: false as const, error: '房间名不合法（1-32 位，不能用 / \\ < > : " | ? *）' }
     }
-    if (roomLocal) {
+    if (session.roomLocal) {
       // 本地房间：本地改名——把状态槽与注册表（含来源记录）迁到新名字，再切过去
       try {
-        localStorage.setItem(localSlotKey(next), JSON.stringify(loadLocalState(roomName)))
+        localStorage.setItem(localSlotKey(next), JSON.stringify(loadLocalState(session.room)))
       } catch {
         return { ok: false as const, error: '本机存储空间不足' }
       }
-      const origin = getLocalOrigin(roomName)
+      const origin = getLocalOrigin(session.room)
       rememberLocalRoom(next, origin)
-      forgetLocalRoom(roomName)
-      clearLocalState(roomName)
+      forgetLocalRoom(session.room)
+      clearLocalState(session.room)
       enterLocalRoom(next)
       rerender()
       showToast(`本地房间已改名「${next}」`)
@@ -608,19 +541,21 @@ const gm: GmContext = {
     }
     // 远端房间：服务端原子改名（内容与密码原样保留）
     try {
-      await renameRoom(API_BASE, roomName, gmKey ?? '', next)
+      await renameRoom(session.serverBase, session.room, session.gmKey ?? '', next)
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        invalidateGmCredential()
+        session.invalidateCredential()
         return { ok: false as const, error: 'GM 密码无效，请重新登录后再改名' }
       }
       return { ok: false as const, error: e instanceof ApiError ? e.message : '无法连接服务器' }
     }
     // 改名后本机各处引用同步到新名字：known-rooms 缓存、当前会话与 URL、本地副本的来源记录
-    const oldName = roomName
-    const entry = loadKnownRooms().find((r) => r.server === API_BASE && r.room === oldName)
+    const oldName = session.room
+    const entry = loadKnownRooms().find(
+      (r) => r.server === session.serverBase && r.room === oldName,
+    )
     if (entry) {
-      forgetRoom(API_BASE, oldName)
+      forgetRoom(session.serverBase, oldName)
       rememberRoom({
         server: entry.server,
         room: next,
@@ -631,12 +566,12 @@ const gm: GmContext = {
     // 指向旧名的本地副本（另存为本地）来源记录跟着改成新名，回推目标不失效
     for (const local of listLocalRooms()) {
       const o = getLocalOrigin(local)
-      if (o && o.server === API_BASE && o.room === oldName) {
+      if (o && o.server === session.serverBase && o.room === oldName) {
         rememberLocalRoom(local, { server: o.server, room: next })
       }
     }
     // 当前会话切到新名字：内容本就在全局槽没动，enterRoom 只是换名字与 URL
-    enterRoom(next, roomJoinPwd)
+    enterRoom(next, session.joinPwd)
     rerender()
     showToast(`房间已改名「${next}」，旧名「${oldName}」已失效`)
     return { ok: true as const }
@@ -647,8 +582,8 @@ const gm: GmContext = {
    * 复制不打断当前会话：仍留在远端房间，本地副本走侧边栏进。
    */
   onSaveAsLocal: () => {
-    if (!roomName || roomLocal) return { ok: false as const, error: '当前不是远端房间' }
-    const name = nextLocalName(roomName)
+    if (!session.room || session.roomLocal) return { ok: false as const, error: '当前不是远端房间' }
+    const name = nextLocalName(session.room)
     try {
       // 与 Store.persist 同格式：JSON 原样落进新本地房间的状态槽
       localStorage.setItem(localSlotKey(name), JSON.stringify(store.state))
@@ -656,126 +591,74 @@ const gm: GmContext = {
       return { ok: false as const, error: '本机存储空间不足' }
     }
     // 记住来源远端：之后「提交本地房间」可直接一键回推
-    rememberLocalRoom(name, { server: API_BASE, room: roomName })
+    rememberLocalRoom(name, { server: session.serverBase, room: session.room })
     showToast(`已另存为本地「${name}」`)
     rerender()
     return { ok: true as const }
   },
   /** 连接状态（reachable / 重试中 / 离线），由轮询结果推导；本地房间与空白工作区恒 reachable */
   get connState() {
-    return connState
+    return sync.connState
   },
   /** 手动「重试」：立刻发一次轮询请求并把退避重置回起点（断线横幅上的按钮） */
   get onRetryNow() {
-    return onRetryNow
+    return () => sync.retryNow()
   },
 }
 
 const rerender = () => render(root, store, ui, !canEdit(), rerender, gm)
 
-// ---------- 房间进入 / 同步上下文 ----------
+// ---------- 房间进入 / 退出（会话记忆在 session；URL 与状态槽归这里） ----------
 
 /**
  * 保存房间配置并进入：更新 room/加入密码记忆 + URL 同步（密码不进 URL）。
- * 刻意不动 API_BASE：服务器地址只由「连接与登录」改，进房间不该顺带换服务器——
+ * 刻意不动服务器地址：它只由「连接与登录」改，进房间不该顺带换服务器——
  * 房间是另一台服务器上的另一个仓库，悄悄把地址也换了只会让人困惑
  */
 function enterRoom(room: string, joinPwd: string): void {
-  roomName = room
-  roomLocal = false
-  roomJoinPwd = joinPwd
-  localStorage.setItem(ROOM_STORAGE, room)
-  localStorage.setItem(ROOM_JOIN_STORAGE, joinPwd)
-  localStorage.setItem(ROOM_TYPE_STORAGE, 'remote')
+  session.enterRemoteRoom(room, joinPwd)
   // 承接远端数据的槽位是全局槽：从本地房间切过来要先复位，否则远端状态会被写进本地房间的槽
   store.attachSlot(STORAGE_KEY)
   const params = new URLSearchParams(location.search)
-  if (API_BASE) params.set('server', API_BASE)
+  if (session.serverBase) params.set('server', session.serverBase)
   params.set('room', room)
   history.replaceState(null, '', `${location.pathname}?${params.toString()}`)
 }
 
 /** 进入本地房间：换到该房间的状态槽，不联网、永远可编辑 */
 function enterLocalRoom(name: string): void {
-  roomName = name
-  roomLocal = true
-  roomJoinPwd = ''
-  localStorage.setItem(ROOM_STORAGE, name)
-  localStorage.removeItem(ROOM_JOIN_STORAGE)
-  localStorage.setItem(ROOM_TYPE_STORAGE, 'local')
+  session.enterLocalRoom(name)
   // 本地房间不写 ?room=（它是本地概念，分享无意义）
   const params = new URLSearchParams(location.search)
   params.delete('room')
   const qs = params.toString()
   history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
-
-  gmKey = null
-  gmAuthed = true
-  dirty = false
+  sync.resetDirty()
   store.attachSlot(localSlotKey(name))
   rememberLocalRoom(name)
-  syncPolling()
+  sync.reconfigure()
 }
 
 /**
  * 退出当前房间、回到本地空白工作区（与 enterRoom / enterLocalRoom 对偶）。
  * 空白工作区是纯本地的：不联网、不拉默认房间，点侧边栏「本地 +」可新建本地房间继续干活。
- * 写凭证一并清掉——远端房间的 GM 密码与空白工作区无关。
  */
 function leaveRoom(): void {
-  // 凭证先清——roomName 还在，invalidateGmCredential 才能选对要删的本机键；随后再清房间记忆
-  invalidateGmCredential()
-  roomName = ''
-  roomLocal = false
-  roomJoinPwd = ''
-  localStorage.removeItem(ROOM_STORAGE)
-  localStorage.removeItem(ROOM_JOIN_STORAGE)
-  localStorage.removeItem(ROOM_TYPE_STORAGE)
+  // session.leave() 内部先清凭证再清房间名（顺序错了会删错本机键）
+  session.leave()
   const params = new URLSearchParams(location.search)
   params.delete('room')
   const qs = params.toString()
   history.replaceState(null, '', `${location.pathname}${qs ? `?${qs}` : ''}`)
-
-  dirty = false
+  sync.resetDirty()
   // 空白工作区是干净起步：先切回全局槽，再置空（不留上一个远端房间的缓存）
   store.attachSlot(STORAGE_KEY)
   store.replaceState(createEmptyState())
   rerender()
-  syncPolling()
+  sync.reconfigure()
 }
 
-/** 拉取当前远端房间状态（仅在远端房间时调用；本地/空白工作区不联网） */
-async function pullCurrent(): Promise<ClockState> {
-  return fetchRoomState(API_BASE, roomName, roomJoinPwd)
-}
-
-/**
- * 推送当前远端房间状态（用 GM 密码）。
- * pushState 不带 version，服务端走强制覆盖：push 是主动操作，默认覆盖乐观锁。
- * 只有远端房间会推送——本地房间与空白工作区的改动是终点，不存在「待推送」。
- */
-async function pushCurrent(): Promise<number> {
-  return saveRoomState(API_BASE, roomName, gmKey ?? '', store.pushState)
-}
-
-rerender()
-
-// 启动即本地工作区（目标架构：不强制进远端房间）：
-// - 本地房间：切到该房间的状态槽，不联网
-// - 远端房间：拉服务器状态（server 权威）
-// - 空白工作区：干净起步，不拉任何东西
-if (roomLocal) {
-  store.attachSlot(localSlotKey(roomName))
-  rerender()
-} else if (roomName) {
-  void bootstrapPull()
-} else {
-  // 空白工作区：构造器已从全局槽恢复上次内容，这里只渲染、不联网。
-  // 绝不能 replaceState 置空——那会丢掉工作区里没进房间的钟，刷新/重开即失忆（?demo 也因此失效过）
-  rerender()
-}
-
-// ---------- 同步层 ----------
+// ---------- 启动 ----------
 
 /** 顶部短暂提示（冲突 / 密钥失效等） */
 function showToast(msg: string): void {
@@ -786,195 +669,36 @@ function showToast(msg: string): void {
   setTimeout(() => toast.remove(), 3500)
 }
 
-// 变更防抖推送到 server（push 默认覆盖；网络失败按退避重试，不静默丢掉改动）
-let pushTimer: number | undefined
-let retryTimer: number | undefined
-let retryDelay = 5000
-
-/** 排一次推送重试；已在等待中就不再排（避免每次改动叠一个定时器） */
-function scheduleRetryPush(): void {
-  if (retryTimer !== undefined) return
-  retryTimer = window.setTimeout(() => {
-    retryTimer = undefined
-    void pushNow()
-  }, retryDelay)
-  // 退避：服务器已下线时固定 5s 打下去只是空转
-  retryDelay = Math.min(retryDelay * 2, 60000)
-}
-
-/** 推送一次。成功清掉 dirty 并把退避重置回起点 */
-async function pushNow(): Promise<void> {
-  // dirty 已被清掉（退出房间等）就别推了，否则会把空状态推上去覆盖服务端
-  if (!dirty) return
-  try {
-    const version = await pushCurrent()
-    // 推送成功：更新同步基线（同一次轮询据此判断远端是否领先），并复位断线状态
-    store.markSynced(version)
-    dirty = false
-    retryDelay = 5000
-    markReachable()
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 409) {
-      // 多写冲突：采用服务器最新状态（丢包重做模式，桌游场景足够）
-      // Web 端推送已不带 version（见 store.pushState），走强制覆盖，自己撞不到这一支；
-      // 保留给仍带 version 的客户端（QQ Bot），以及将来恢复乐观锁的情形
-      try {
-        const remote = e.latest ?? (await pullCurrent())
-        store.replaceState(remote)
-        // 采用远端后本地与服务端同版本，算已同步；
-        // 不置 false 的话 dirty 会一直为真，轮询从此被 if (dirty) return 挡死
-        dirty = false
-        showToast('状态已在别处更新，已同步最新')
-        rerender()
-      } catch {
-        // 拉取失败静默
-      }
-    } else if (e instanceof ApiError && e.status === 401) {
-      // GM 密码失效：清除写凭证并提示重新输入（加入密码错误则轮询静默，不影响只读）
-      invalidateGmCredential(roomName ? 'GM 密码失效，请重新登录' : 'GM 密钥失效，请重新登录')
-      rerender()
-      syncPolling()
-    } else {
-      // 网络错误 / 服务器不可达：dirty 保持为真，排一次重试，并进入断线状态机（置灰 + 横幅）。
-      // 此前这里完全静默，于是这次改动唯一的第二次机会是「用户再改一次」——
-      // 而 GM 端是不轮询的（syncPolling 只给非 GM 起轮询），没有别的路径能把它推出去。
-      // 关掉页面更糟：本地数据还在，下次启动 bootstrapPull 会用服务端状态覆盖掉。
-      onPollError(e)
-      scheduleRetryPush()
-    }
-  }
-}
-
-store.subscribe((kind) => {
-  // 显示顺序是本机的视图偏好，不是契约数据，不参与同步
-  if (kind === 'order') return
-  // 只有远端房间且持有写凭证才推送；本地房间 / 空白工作区的改动由 Store 就地落盘，是终点
-  if (!canPush()) return
-  dirty = true
-  window.clearTimeout(pushTimer)
-  pushTimer = window.setTimeout(() => void pushNow(), 500)
-})
-
-// 启动：拉取 server 状态（server 为权威；失败保持本地数据并定时重试，server 重启后自动恢复）
-async function bootstrapPull(): Promise<void> {
-  try {
-    const remote = await pullCurrent()
-    store.replaceState(remote)
-    markReachable()
+// 启动时验证本地已存的密钥是否仍有效
+if (!urlReadonly && session.gmKey) {
+  void checkGmKey(session.gmKey).then((result) => {
+    session.setAuthed(result === 'ok')
+    // 只有服务器明确说「凭证不对」才丢弃。连不上时保留：
+    // 离线打开远端房间必然校验失败，若据此清空，联网后还得重新输一遍密码
+    if (result === 'unauthorized') session.invalidateCredential()
     rerender()
-  } catch (e) {
-    if (e instanceof ApiError && e.status === 401 && roomName) {
-      // 私有房间 / 加入密码记忆失效：弹连接弹窗重新输入
-      // 停轮询：密码不对时每 5s 的失败请求无意义，等用户重新输入后再起
-      stopPolling()
-      openRoomDialog(ui)
-      rerender()
-    } else {
-      // 离线 / server 刚重启：进断线状态机（置灰 + 横幅），5s 后重试；成功前本地数据可用
-      onPollError(e)
-      setTimeout(() => void bootstrapPull(), 5000)
-    }
-  }
+    sync.reconfigure()
+  })
 }
-void bootstrapPull()
 
-// ---------- 只读端轮询 ----------
-// 是否轮询由「是否持有写凭证」决定，而不是 URL 参数：
-// 分享给玩家的 ?room=xxx 通常不带 readonly，此前因此既不轮询也不推送，全程静态快照。
-// GM 端自身靠推送，不轮询；登录态或房间/服务器变化时重建，避免沿用旧的 room 与密码。
-let pollingStop: (() => void) | null = null
+rerender()
 
-/**
- * 轮询成功回调：复位断线状态 + 原同步逻辑。
- * 断线中恢复成功给一次可见反馈（静默恢复等于没恢复）；reachable 下的正常成功静默。
- */
-function onPollUpdate(remote: ClockState): void {
-  markReachable()
-  // 本地有未推送成功的改动时不覆盖，防丢改动。
-  // 只看 dirty，不看 gmAuthed：推送撞 401 时 gmAuthed 会被置 false 并重启轮询，
-  // 而那一刻恰恰是本地改动最需要保护的时候——带上 gmAuthed 反而撤掉了保护
-  if (dirty) return
-  // 版本没变就整个跳过：replaceState() 会清空撤销栈并把当前钟选中态置空，
-  // 无条件每 5s 替换一次，等于每 5 秒把只读端刚点选中的钟取消掉（TODO-71af8dd5）。
-  // version 由服务端每次写入自增，因此「版本相同」即可认为内容相同。
-  if (remote.version === store.state.version) return
-  store.replaceState(remote)
+// 启动即本地工作区（目标架构：不强制进远端房间）：
+// - 本地房间：切到该房间的状态槽，不联网
+// - 远端房间：拉服务器状态（server 权威；失败进断线状态机，5s 后重试）
+// - 空白工作区：干净起步，构造器已从全局槽恢复上次内容，这里只渲染、不拉任何东西。
+//   绝不能 replaceState 置空——那会丢掉工作区里没进房间的钟，刷新/重开即失忆（?demo 也因此失效过）
+if (session.roomLocal) {
+  store.attachSlot(localSlotKey(session.room))
+  rerender()
+} else if (session.room) {
+  sync.bootstrap()
+} else {
   rerender()
 }
 
-/** 轮询失败回调：401（加入密码错）弹重输；网络异常走断线三阶段 */
-function onPollError(e: unknown): void {
-  if (e instanceof ApiError && e.status === 401) {
-    // 加入密码错误：停轮询，弹连接弹窗重新输入（与 bootstrapPull 一致），不要无限重试
-    stopPolling()
-    openRoomDialog(ui)
-    rerender()
-    return
-  }
-  if (connState === 'reachable') {
-    if (!silentFail) {
-      // 首次失败：静默补一次快速重试（下一个 tick 用 100ms），不提示、不置灰
-      silentFail = true
-      pollDelay = 100
-    } else {
-      // 补的快速重试也失败：进「重试中」，置灰写操作
-      connState = 'degraded'
-      degradedFails = 1
-      pollDelay = 5000
-      silentFail = false
-    }
-  } else if (connState === 'degraded') {
-    degradedFails++
-    pollDelay = Math.min(pollDelay * 2, 60000) // 5s → 10s → 20s → 40s → 60s
-    if (degradedFails >= 3) connState = 'down'
-  }
-  // down 后继续失败保持 60s 上限（pollDelay 已在 degraded 阶段拉满），不再变化
-  rerender()
-}
-
-/** 手动「重试」：立刻发一次请求并把退避重置回起点（覆盖「网络已恢复但不想等退避」的情况） */
-function onRetryNow(): void {
-  pollDelay = 5000
-  void (async () => {
-    try {
-      const remote = await fetchRoomState(API_BASE, roomName, roomJoinPwd)
-      onPollUpdate(remote)
-    } catch (err) {
-      onPollError(err)
-    }
-  })()
-}
-
-function startPolling(): void {
-  pollingStop?.()
-  // 新上下文（进房间 / 换服务器 / 重新登录）重置连接状态
-  connState = 'reachable'
-  silentFail = false
-  degradedFails = 0
-  pollDelay = 5000
-  pollingStop = pollState(
-    API_BASE,
-    onPollUpdate,
-    () => (silentFail ? 100 : connState === 'reachable' ? 5000 : pollDelay),
-    roomName,
-    roomJoinPwd,
-    onPollError,
-  )
-}
-
-function stopPolling(): void {
-  pollingStop?.()
-  pollingStop = null
-}
-
-/** 按当前上下文重建轮询：本地 / 空白工作区不联网；远端房间 GM 靠推送停轮询、玩家轮询 */
-function syncPolling(): void {
-  if (roomName === '' || roomLocal || gmAuthed) stopPolling()
-  else startPolling()
-}
-
-// 启动即按「是否已持有写凭证」决定轮询；GM 密钥验证通过后 syncPolling 会停掉它
-syncPolling()
+// 启动即按「是否已持有写凭证」决定轮询；GM 密钥验证通过后 reconfigure 会停掉它
+sync.reconfigure()
 
 // ---------- 快捷键 ----------
 
@@ -1033,7 +757,7 @@ window.addEventListener('keydown', (e) => {
   }
 
   // 以下都是写操作：只读模式或未登录 GM 时不响应
-  if (urlReadonly || !gmAuthed) return
+  if (urlReadonly || !session.authed) return
 
   switch (e.key) {
     case 'ArrowLeft':

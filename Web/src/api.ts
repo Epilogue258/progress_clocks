@@ -2,12 +2,13 @@ import type { ClockState } from '../../common/types'
 
 /**
  * 服务端 API 客户端（契约见 server/README.md）。
- * 只封装 Web 端实际用到的接口——默认房间仅剩只读轮询与 GM 登录（写入走房间接口）：
+ * Web 端只走房间接口与凭证校验；/api/state 等默认房间接口留给外部插件（QQ Bot）直连：
  *
- * GET  /api/state             -> 完整状态 JSON（pollState 在无房间时轮询用）
- * GET  /api/auth-check        -> GM 密钥验证
+ * GET  /api/auth-check        -> GM 密钥验证（空白工作区登录用）
+ * GET  /api/rooms             -> 房间列表
+ * POST /api/rooms             -> 新建房间
  * GET/POST/PATCH/DELETE
- *      /api/room/<name>/...   -> 房间读写（见下方房间一节）
+ *      /api/room/<name>/...   -> 房间读写 / 改密 / 删除 / 改名
  *
  * 鉴权：Authorization: Bearer <密码>，按接口带加入密码 / GM 密码 / GM_KEY。
  * 409 + 最新状态（ApiError.latest）保留给仍带 version 的第三方客户端（QQ Bot）；
@@ -28,13 +29,6 @@ export class ApiError extends Error {
 
 function authHeaders(key?: string): Record<string, string> {
   return key ? { Authorization: `Bearer ${key}` } : {}
-}
-
-/** 拉取完整状态（公开接口） */
-export async function fetchState(baseUrl: string): Promise<ClockState> {
-  const res = await fetch(`${baseUrl}/api/state`)
-  if (!res.ok) throw new ApiError(res.status, `获取状态失败: ${res.status}`)
-  return (await res.json()) as ClockState
 }
 
 /**
@@ -202,41 +196,5 @@ export async function renameRoom(
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null
     throw new ApiError(res.status, body?.error ?? `重命名失败: ${res.status}`)
-  }
-}
-
-/**
- * 玩家端轮询：低频变更（几分钟一次）场景下轮询比 WebSocket 更省事。
- * - intervalMs 可传函数：返回「下一次轮询」的间隔，供断线退避逐步拉长
- * - onError：把失败（网络异常 / 401）交给上层，由上层决定是静默快速重试、置灰还是弹重输
- */
-export function pollState(
-  baseUrl: string,
-  onUpdate: (state: ClockState) => void,
-  intervalMs: number | (() => number) = 5000,
-  room?: string,
-  pwd?: string,
-  onError?: (err: unknown) => void,
-): () => void {
-  let stopped = false
-  let timer: number | undefined
-  const schedule = (): void => {
-    if (stopped) return
-    const delay = typeof intervalMs === 'function' ? intervalMs() : intervalMs
-    timer = window.setTimeout(tick, delay)
-  }
-  const tick = async (): Promise<void> => {
-    if (stopped) return
-    try {
-      onUpdate(await (room ? fetchRoomState(baseUrl, room, pwd ?? '') : fetchState(baseUrl)))
-    } catch (e) {
-      onError?.(e)
-    }
-    schedule()
-  }
-  void tick()
-  return () => {
-    stopped = true
-    if (timer !== undefined) clearTimeout(timer)
   }
 }
