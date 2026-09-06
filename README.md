@@ -39,10 +39,14 @@
 
 **网团场景**：跑团进行中，Bot 收到 `/clock 2/4 穿过守卫` → 注册/更新进度钟 → `/clock show` → 发送进度钟全景图到群里。API 只提供原语（读/写状态、导出图片），命令解析在 Bot 侧，灵活演进。
 
-**技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一运行时依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。开发期工具：根目录 `npm run lint`（Biome 管 lint + 格式，配置在 `biome.json`，风格不再靠手保持——无分号、单引号、尾逗号、100 列）。
+**技术栈**：TypeScript 全栈（Node 24 原生运行 TS，零编译步骤）、零框架（Web 手写 DOM + SVG）、唯一运行时依赖 `@resvg/resvg-js`（服务端 SVG→PNG）。开发期工具：根目录 `npm run lint`（Biome 管 lint + 格式，配置在 `biome.json`，风格不再靠手保持——无分号、单引号、尾逗号、100 列）；`cd Web && npm test`（Node 原生 test runner，零测试框架）。
 
-**代码在哪**：最主要的文件是 `Web/src/ui.ts`（全部渲染与手势），其余都是围绕它的工具文件
-——`main.ts` 编排同步与交互、`state.ts` 管状态与撤销栈、`api.ts` 封装 HTTP，`server/` 只是个可选的同步端。
+**代码在哪**：`Web/src/ui.ts`（全部渲染与手势，重渲染时按 `data-persist-key` 保留输入框的焦点与已输内容）
+围绕它分工——`main.ts` 是编排层：装配模块、实现 GmContext 的各房间操作、全局快捷键；
+`core/session.ts` 管会话状态（服务器 / 房间 / 凭证及其本机落盘）；
+`core/sync.ts` 是同步引擎（推送 / 轮询 / 断线退避，fetch 与定时器全注入，
+由 `core/sync.test.ts` 的 24 例特征测试锁定行为，`cd Web && npm test` 运行）；
+`state.ts` 管状态与撤销栈、`api.ts` 封装 HTTP，`server/` 只是个可选的同步端。
 行数每次改动都在变，不在此记录。
 
 
@@ -370,6 +374,11 @@ cd ../server && npm install && npm start
 
 ### 已完成
 
+- [x] **main.ts 拆分 + 重渲染保焦保值 + 同步引擎特征测试**（web/refactor）：core/session（会话）与
+  core/sync（同步引擎，依赖全注入）从 main.ts 抽出；24 例特征测试（node:test 零框架）锁定同步不变式；
+  轮询重建改事件驱动；重渲染按 data-persist-key 保留输入框焦点与已输内容，删掉草稿样板。
+  顺带修复测试抓出的三个真 bug：down 态退避卡死 20s（离线点重试后 5s 空转）、retryNow 不重置轮询节拍、
+  404 房间已删从未退出（README 声称过但代码从未实现）
 - [x] **凭证清理归一化 + Biome 机器兜底**（web/refactor）：GM 凭证清理五处重复收进 `invalidateGmCredential()`；
   切换房间验出密码失效时 known-rooms 写凭证一并抹掉；删除 `api.ts` 死代码 `saveState`；
   server 元数据加结构校验、`renameRoom` 先读后改；根目录 `npm run lint`（Biome，风格与手写一致）
@@ -446,10 +455,23 @@ cd ../server && npm install && npm start
   弹窗提示（`gmError` / `roomError`）和输入草稿（`roomDraft`）都落进状态跟着一起重画，
   重渲染由调用方在异步结束后统一触发一次
 - **凭证清理统一入口**：清 GM 写凭证 = `gmKey` / `gmAuthed` 复位 + 本机记忆删除 + （可选）一条 toast，
-  收进 `main.ts` 的 `invalidateGmCredential()`——此前推送 401 / 改名 401 / 提交本地房间 401 /
+  收进 `core/session.ts` 的 `invalidateCredential()`——此前推送 401 / 改名 401 / 提交本地房间 401 /
   启动复验失败 / 退出房间各写一遍，漏掉任何一步（登录态没复位、localStorage 残留）表现各异且难排查。
-  注意 `dropGmKey()` 按当前 `roomName` 选要删的键，所以 `leaveRoom` 必须先清凭证再清房间名；
+  注意凭证落在哪个键取决于当前是否在房间，所以 `Session.leave()` 内部先清凭证再清房间名；
   known-rooms 缓存的按房间条目不在入口内，由调用方决定是否抹掉（切换房间验出密码失效时一并抹，见决策「只缓存验证通过的 GM 密码」）
+- **同步引擎可测性红线**：`core/sync.ts` 里不出现 `fetch` / `setTimeout` / `localStorage` / `document`
+  ——拉取、推送、定时、提示全部由依赖注入。红线就是测试本身：`core/sync.test.ts` 用假时钟 + 假网络
+  驱动全部状态转移（24 例），不启浏览器不造 DOM。重构顺序由此定死：先纯搬移（引擎落到注入形态）、
+  立刻补特征测试锁住现有语义、之后才允许做行为微调（事件驱动轮询重建、退避修复都发生在测试网织好之后）
+- **重渲染保焦保值，草稿不进 UiState**：全量重渲染模型的输入框脆弱性靠机制解决而非逐处样板——
+  标了 `data-persist-key` 的输入框（房间名 / 密码 / 服务器地址这类「用户打了一半」的字段），
+  `render()` 前快照、后恢复；恢复判据是 `lastRenderedValues`：新渲染写的值与上次相同 = 应用没动它 →
+  恢复用户输入，不同 = 应用主动改了 → 尊重新值绝不打架。快照覆盖所有 keyed 框而不止焦点框
+  （点「提交」后焦点在按钮上，报错重渲染时打了一半的字也要保住）。注意：选择器/搜索词是
+  「已应用状态」不是草稿（驱动过滤、重渲染时本来就要用），仍留在 UiState
+- **轮询重建事件驱动**：会话任何变更（进房 / 退房 / 换服务器 / 凭证增删）经 `Session` 的订阅
+  自动触发 `SyncEngine.reconfigure()`——此前靠各操作尾部记得手动 syncPolling，
+  漏调一个就是「改名后轮询还在打旧名字」「改密后还用旧密码轮询」这类陈旧上下文 bug（两个都真实存在过）
 - **CSS 兜底规则不放会被单点覆盖的属性**：`.modal input:not(...)×5` 的特异性高达
   (0,6,1)，会把 `.fill-input` 这类单类覆盖项 (0,1,0) 打穿。
   需要被覆盖的属性（如 `width`）一律写在同特异性的单类上，靠定义顺序取胜

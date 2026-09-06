@@ -143,6 +143,11 @@ const sync = new SyncEngine(
     render: () => rerender(),
     promptRejoin: () => openRoomDialog(ui),
     onCredentialRejected: rejectCredentialWithToast,
+    onRoomDeleted: () => {
+      // 房间已在别处删除：退出到空白工作区并提示（leaveRoom 内部自带重渲染）
+      leaveRoom()
+      showToast('房间已不存在（可能在别的设备上被删除）')
+    },
   },
   store,
 )

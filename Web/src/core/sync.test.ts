@@ -119,6 +119,7 @@ function harness(overrides?: Partial<Pick<SyncDeps, 'canPush' | 'shouldPoll' | '
     render: () => events.push('render'),
     promptRejoin: () => events.push('promptRejoin'),
     onCredentialRejected: () => events.push('credentialRejected'),
+    onRoomDeleted: () => events.push('roomDeleted'),
     ...overrides,
   }
   const sync = new SyncEngine(deps, store)
@@ -401,6 +402,26 @@ test('轮询 401（加入密码错）：停轮询 + 弹重输，凭证不被自�
   await h.flush()
   assert.equal(h.events.includes('promptRejoin'), true)
   assert.deepEqual(h.clock.pendingDelays, []) // 轮询已停，不再空转
+})
+
+test('轮询 404（房间已在别处删除）：退出房间且回调只触发一次，不再重试', async () => {
+  const h = harness()
+  h.sync.reconfigure()
+  await h.flush()
+  h.pendingPulls[0].reject(new ApiError(404, '房间不存在'))
+  await h.flush()
+  assert.equal(h.events.filter((e) => e === 'roomDeleted').length, 1)
+  assert.deepEqual(h.clock.pendingDelays, []) // 不再对已删房间空转
+})
+
+test('bootstrap 404：同样视为房间已删退出，不进退避重试', async () => {
+  const h = harness()
+  h.sync.bootstrap()
+  await h.flush()
+  h.pendingPulls[0].reject(new ApiError(404, '房间不存在'))
+  await h.flush()
+  assert.equal(h.events.includes('roomDeleted'), true)
+  assert.deepEqual(h.clock.pendingDelays, [])
 })
 
 test('手动 retryNow：立刻发一次请求，并把退避重置回 5s', async () => {

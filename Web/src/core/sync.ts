@@ -51,6 +51,8 @@ export interface SyncDeps extends SyncContext {
   promptRejoin(): void
   /** GM 凭证被服务器明确拒绝（推送 401）：清登录态（含提示） */
   onCredentialRejected(): void
+  /** 房间已在别处删除（404）：退出房间并提示，不再重试 */
+  onRoomDeleted(): void
 }
 
 const POLL_INTERVAL = 5000
@@ -190,6 +192,10 @@ export class SyncEngine {
           this.stopPolling()
           this.deps.promptRejoin()
           this.deps.render()
+        } else if (e instanceof ApiError && e.status === 404) {
+          // 房间已在别处删除：退出并提示，与轮询侧同一处理
+          this.stopPolling()
+          this.deps.onRoomDeleted()
         } else {
           this.handlePollError(e)
           this.deps.schedule(() => this.bootstrap(), RETRY_BASE)
@@ -220,6 +226,13 @@ export class SyncEngine {
       this.stopPolling()
       this.deps.promptRejoin()
       this.deps.render()
+      return
+    }
+    if (e instanceof ApiError && e.status === 404) {
+      // 房间已在别处删除：停轮询并退出——退出回调里会离开房间、复位会话，
+      // 之后不再有针对已删房间的重试（README「轮询协议」：404 → 房间已删退出）
+      this.stopPolling()
+      this.deps.onRoomDeleted()
       return
     }
     if (this.connValue === 'reachable') {
